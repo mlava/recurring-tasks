@@ -2,7 +2,6 @@ import iziToast from "izitoast";
 
 export default {
   onload: ({ extensionAPI }) => {
-    // --- Settings panel ---
     const config = {
       tabTitle: "Recurring Tasks",
       settings: [
@@ -39,29 +38,27 @@ export default {
       ],
     };
     extensionAPI.settings.panel.create(config);
-
-    // defaults if settings not set
+    
     function S() {
+      const adv = (extensionAPI.settings.get("rt-advance-from") || "Due").toString().toLowerCase();
       return {
         destination: extensionAPI.settings.get("rt-destination") || "DNP",
-        dnpHeading: extensionAPI.settings.get("rt-dnp-heading") || "#Tasks",
+        dnpHeading: extensionAPI.settings.get("rt-dnp-heading") || "Tasks",
         dateFormat: "ROAM",
-        advanceFrom: extensionAPI.settings.get("rt-advance-from") || "due",
+        advanceFrom: adv,
         attributeSurface: extensionAPI.settings.get("rt-attribute-surface") || "Child",
         confirmBeforeSpawn: !!extensionAPI.settings.get("rt-confirm"),
       };
     }
-
-    // --- Runtime state ---
-    const processedMap = new Map(); // uid -> processed flag
+    
+    const processedMap = new Map();
     let observer = null;
     let observerReinitTimer = null;
-
-    // --- Boot ---
+    let lastSweep = 0;
+    
     initiateObserver();
     window.addEventListener("hashchange", handleHashChange);
-
-    // ============== Observer that mirrors your working pattern ==============
+    
     function normalizeUid(raw) {
       if (!raw) return null;
       const trimmed = String(raw).trim();
@@ -169,24 +166,23 @@ export default {
       const targetNode2 = document.getElementById("right-sidebar");
       if (!targetNode1 && !targetNode2) return;
 
+      ensurePillStyles();
+
       const obsConfig = { attributes: false, childList: true, subtree: true };
       const callback = async function (mutationsList, obs) {
         for (const mutation of mutationsList) {
-          // We only care about *added* nodes because Roam tends to re-render on toggle
           if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
 
           for (const node of mutation.addedNodes) {
             if (!(node instanceof HTMLElement)) continue;
-
-            // Find any checkboxes newly rendered in this subtree
+            decorateBlockPills(node);
+            
             const inputs = node.matches?.(".check-container input")
               ? [node]
               : Array.from(node.querySelectorAll?.(".check-container input") || []);
 
             for (const input of inputs) {
-              // We only act on DONE toggles (checked = true)
               if (!input?.control?.checked && !input?.checked) continue;
-              // Find the block element to get its UID
               const uid = findBlockUidFromCheckbox(input);
               if (!uid) {
                 continue;
@@ -218,6 +214,8 @@ export default {
                     continue;
                   }
                 }
+                
+                await markCompleted(uid, set);
 
                 const nextDue = computeNextDue(meta, set);
                 if (!nextDue) {
@@ -235,14 +233,15 @@ export default {
             }
           }
         }
+
+        sweepProcessed();
       };
 
       observer = new MutationObserver(callback);
       if (targetNode1) observer.observe(targetNode1, obsConfig);
       if (targetNode2) observer.observe(targetNode2, obsConfig);
     }
-
-    // ========================= Roam helpers =========================
+    
     async function getBlock(uid) {
       const res = await window.roamAlphaAPI.q(`
         [:find (pull ?b [:block/uid :block/string :block/props
@@ -303,7 +302,7 @@ export default {
 
     async function readRecurringMeta(block, set) {
       const props = parseProps(block.props);
-      const rt = props.rt || {}; // { id, parent, lastCompleted }
+      const rt = props.rt || {};
 
       const fromProps = {
         repeat: props.repeat || null,
@@ -382,10 +381,32 @@ export default {
     }
 
     // ========================= Completion + next spawn =========================
+    async function ensureChildAttr(uid, key, value) {
+      const current = await window.roamAlphaAPI.q(`
+        [:find (pull ?c [:block/uid :block/string])
+         :where [?p :block/uid "${uid}"] [?c :block/parents ?p]]`);
+      const has = (current || []).some((r) =>
+        new RegExp(`^\\s*${key}::\\s*`, "i").test((r[0]?.string || "").trim())
+      );
+      if (!has) await createBlock(uid, 0, `${key}:: ${value}`);
+      else {
+        // If exists and differs, update existing child
+        const match = (current || []).find((r) =>
+          new RegExp(`^\\s*${key}::\\s*`, "i").test((r[0]?.string || "").trim())
+        );
+        const curVal = match?.[0]?.string?.replace(/^[^:]+::\s*/i, "")?.trim();
+        if (typeof curVal === "string" && curVal !== value) {
+          await window.roamAlphaAPI.updateBlock({ block: { uid: match[0].uid, string: `${key}:: ${value}` } });
+        }
+      }
+    }
+
     async function markCompleted(uid, set) {
       const d = formatDate(todayLocal(), set);
 
-      if (set.attributeSurface !== "Hidden") {
+      if (set.attributeSurface === "Child") {
+        await ensureChildAttr(uid, "completed", d);
+      } else {
         const block = await getBlock(uid);
         const lines = block.string.split("\n");
         const i = lines.findIndex((l) => /^completed::/i.test(l.trim()));
@@ -394,7 +415,9 @@ export default {
         await updateBlockString(uid, lines.join("\n"));
       }
 
-      await updateBlockProps(uid, { rt: { lastCompleted: new Date().toISOString() } });
+      await updateBlockProps(uid, {
+        rt: { lastCompleted: new Date().toISOString() },
+      });
     }
 
     async function spawnNextOccurrence(prevBlock, meta, nextDueDate, set) {
@@ -406,14 +429,14 @@ export default {
 
       const targetPageUid = await chooseTargetPageUid(nextDueDate, prevBlock, set);
 
-      const taskLine = normalizeToTodoMacro(prevText).trim(); // ensure macro-style TODO
+      const taskLine = normalizeToTodoMacro(prevText).trim();
       const newUid = window.roamAlphaAPI.util.generateUID();
 
       await createBlock(targetPageUid, 0, taskLine, newUid);
 
       if (set.attributeSurface === "Child") {
-        await createBlock(newUid, 0, `repeat:: ${meta.repeat}`);
-        await createBlock(newUid, 1, `due:: ${nextDueStr}`);
+        await ensureChildAttr(newUid, "repeat", meta.repeat);
+        await ensureChildAttr(newUid, "due", nextDueStr);
       }
 
       await updateBlockProps(newUid, {
@@ -464,6 +487,30 @@ export default {
     };
     const DOW_IDX = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 
+    // NEW: helpers for ordinal + weekday aliasing
+    const ORD_MAP = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "last": -1 };
+    const DOW_ALIASES = {
+      su: "sunday", sun: "sunday", sunday: "sunday",
+      mo: "monday", mon: "monday", monday: "monday",
+      tu: "tuesday", tue: "tuesday", tues: "tuesday", tuesday: "tuesday",
+      we: "wednesday", wed: "wednesday", wednesday: "wednesday",
+      th: "thursday", thu: "thursday", thur: "thursday", thurs: "thursday", thursday: "thursday",
+      fr: "friday", fri: "friday", friday: "friday",
+      sa: "saturday", sat: "saturday", saturday: "saturday",
+    };
+
+    function ordFromText(s) {
+      const n = Number(s);
+      if (!Number.isNaN(n) && n >= 1 && n <= 31) return n;
+      const key = s.toLowerCase();
+      if (ORD_MAP[key] != null) return ORD_MAP[key];
+      return null;
+    }
+    function dowFromAlias(s) {
+      const norm = (DOW_ALIASES[s.toLowerCase()] || s).toLowerCase();
+      return DOW_MAP[norm] || null;
+    }
+
     function parseRuleText(s) {
       if (!s) return null;
       const t = s.trim().replace(/\s+/g, " ").toLowerCase();
@@ -476,10 +523,12 @@ export default {
       if (t === "every weekday") return { kind: "WEEKDAY" };
       let m = t.match(/^every (\d+)\s*days?$/);
       if (m) return { kind: "DAILY", interval: parseInt(m[1], 10) };
+
       const singleDow = Object.entries(DOW_MAP).find(
         ([name]) => t === `every ${name}` || t === `every ${name}s`
       );
       if (singleDow) return { kind: "WEEKLY", interval: 1, byDay: [singleDow[1]] };
+
       if (t.startsWith("every ")) {
         const dowCandidate = t.slice("every ".length).replace(/\s+/g, " ").trim();
         const direct = DOW_MAP[dowCandidate];
@@ -490,9 +539,11 @@ export default {
           if (code) return { kind: "WEEKLY", interval: 1, byDay: [code] };
         }
       }
+
       if (t === "weekly") return { kind: "WEEKLY", interval: 1, byDay: null };
       if (t === "every week") return { kind: "WEEKLY", interval: 1, byDay: null };
       if (t === "every other week" || t === "every second week") return { kind: "WEEKLY", interval: 2, byDay: null };
+
       let weeklyOn = t.match(/^(?:every week|weekly)\s+on\s+(.+)$/);
       if (weeklyOn) {
         const byDay = weeklyOn[1]
@@ -516,6 +567,7 @@ export default {
           .filter(Boolean);
         if (byDay.length) return { kind: "WEEKLY", interval: 1, byDay };
       }
+
       if (t === "monthly") return { kind: "MONTHLY_DAY", day: todayLocal().getDate() };
       m = t.match(/^every month on day (\d{1,2})$/);
       if (m) return { kind: "MONTHLY_DAY", day: parseInt(m[1], 10) };
@@ -523,6 +575,30 @@ export default {
         /^every month on the (1st|2nd|3rd|4th|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/
       );
       if (m) return { kind: "MONTHLY_NTH", nth: m[1], dow: DOW_MAP[m[2]] };
+      
+      m = t.match(/^(?:the\s+)?(\d{1,2}|1st|2nd|3rd|4th)\s+day\s+of\s+(?:each|every)\s+month$/);
+      if (m) return { kind: "MONTHLY_DAY", day: ordFromText(m[1]) };
+      m = t.match(/^day\s+(\d{1,2})\s+(?:of|in)?\s*(?:each|every)\s+month$/);
+      if (m) return { kind: "MONTHLY_DAY", day: parseInt(m[1], 10) };
+      
+      m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) {
+        const nth = m[1].toLowerCase();
+        const dow = dowFromAlias(m[2]);
+        if (dow) return { kind: "MONTHLY_NTH", nth, dow };
+      }
+      // compact variant: “2nd Tue each month”
+      m = t.match(/^(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:each|every)\s+month$/);
+      if (m) {
+        const nth = m[1].toLowerCase();
+        const dow = dowFromAlias(m[2]);
+        if (dow) return { kind: "MONTHLY_NTH", nth, dow };
+      }
+
+      // “every weekend”
+      if (t === "every weekend" || t === "weekend")
+      return { kind: "WEEKLY", interval: 1, byDay: ["SA","SU"] };
+
       return null;
     }
 
@@ -532,7 +608,7 @@ export default {
         console.warn(`[RecurringTasks] Unable to parse repeat rule "${meta.repeat}"`);
         return null;
       }
-      const base = set.advanceFrom === "Completion" ? todayLocal() : meta.due || todayLocal();
+      const base = set.advanceFrom === "completion" ? todayLocal() : meta.due || todayLocal();
       switch (rule.kind) {
         case "DAILY":
           return addDaysLocal(base, rule.interval || 1);
@@ -575,7 +651,7 @@ export default {
       const nthMap = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, last: -1 };
       const nth = nthMap[nthText];
       const y = base.getFullYear();
-      const m = base.getMonth() + 1; // next month
+      const m = base.getMonth() + 1;
       if (nth === -1) {
         const last = new Date(y, m + 1, 0, 12, 0, 0, 0);
         return lastDowOnOrBefore(last, dowCode);
@@ -666,7 +742,7 @@ export default {
             ['<button>Yes</button>', function (instance, toast, button, e, inputs) {
               instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
               finish(true);
-            }, false], // true to focus
+            }, true], // true to focus
             [
               "<button>No</button>",
               function (instance, toast, button, e) {
@@ -692,6 +768,154 @@ export default {
         closeOnClick: true,
         displayMode: 2
       });
+    }
+
+    // ========================= Hidden pills UI =========================
+    function ensurePillStyles() {
+      if (document.getElementById("rt-pill-style")) return;
+      const style = document.createElement("style");
+      style.id = "rt-pill-style";
+      style.textContent = `
+        .rt-pill-wrap { margin-left: 8px; }
+        .rt-pill {
+          display: inline-block;
+          padding: 2px 6px;
+          border-radius: 10px;
+          border: 1px solid var(--rt-pill-border, #ccc);
+          font-size: 12px;
+          cursor: pointer;
+          margin-right: 6px;
+          user-select: none;
+          transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .rt-pill:hover {
+          background: rgba(0,0,0,0.04);
+          border-color: var(--rt-pill-border-hover, #bbb);
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    function decorateBlockPills(rootEl) {
+      const blocks = rootEl.matches?.(".roam-block") ? [rootEl] : Array.from(rootEl.querySelectorAll?.(".roam-block") || []);
+      for (const b of blocks) {
+        try {
+          const uid = normalizeUid(b.getAttribute?.("data-uid") || b.dataset?.uid);
+          if (!uid) continue;
+          // skip if pills already added
+          if (b.querySelector?.(".rt-pill-wrap")) continue;
+
+          window.roamAlphaAPI.q(
+            `[:find ?p :where [?b :block/uid "${uid}"] [?b :block/props ?p]]`
+          ).then(async res => {
+            let props = {};
+            try { props = res?.[0]?.[0] ? JSON.parse(res[0][0]) : {}; } catch {}
+            const repeat = props.repeat || null;
+            const due = props.due || null;
+            if (!repeat && !due) return;
+            const set = S();
+            if (set.attributeSurface !== "Hidden") return;
+
+            const main = b.querySelector?.(".rm-block-main");
+            if (!main) return;
+
+            const check = main.querySelector?.(".check-container, .rm-checkbox") || main.firstElementChild;
+            const pillWrap = document.createElement("span");
+            pillWrap.className = "rt-pill-wrap";
+
+            function makePill(label, title, onClick) {
+              const el = document.createElement("span");
+              el.className = "rt-pill";
+              el.textContent = label;
+              el.title = title;
+              el.addEventListener("click", (e) => { e.stopPropagation(); onClick(e); });
+              return el;
+            }
+
+            if (repeat) {
+              pillWrap.appendChild(makePill(
+                "Repeat",
+                repeat,
+                async (e) => {
+                  if (e.altKey) {
+                    // Alt-click: quick edit repeat
+                    iziToast.question({
+                      theme: 'light',
+                      color: 'black',
+                      layout: 2,
+                      class: 'recTasks',
+                      drag: false,
+                      timeout: false,
+                      close: true,
+                      overlay: true,
+                      title: "Edit Repeat",
+                      message: `Current: ${repeat}`,
+                      inputs: [
+                        ['<input type="text" placeholder="e.g. 1st Monday of each month" />', 'keyup', function (instance, toast, input, e) {}]
+                      ],
+                      buttons: [
+                        ['<button>Save</button>', async (instance, toast, button, e, inputs) => {
+                          const val = inputs?.[0]?.value?.trim();
+                          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+                          if (!val) return;
+                          await updateBlockProps(uid, { repeat: val });
+                          if (set.attributeSurface === "Child") await ensureChildAttr(uid, "repeat", val);
+                          toastMsg(`Repeat → ${val}`);
+                          function toastMsg(m){ toast(m); }
+                        }, false],
+                        ['<button>Cancel</button>', (instance, toast) => {
+                          instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+                        }]
+                      ],
+                      onClosing: () => {}
+                    });
+                  } else {
+                    try { await navigator.clipboard?.writeText?.(repeat); toast("Repeat copied"); } catch { /*noop*/ }
+                  }
+                }
+              ));
+            }
+            if (due) {
+              pillWrap.appendChild(makePill(
+                "Due",
+                due,
+                async (e) => {
+                  const d = parseRoamDate(due) || todayLocal();
+                  if (e.shiftKey) {
+                    // Shift-click: snooze +1 day
+                    const next = addDaysLocal(d, 1);
+                    const nextStr = formatDate(next, set);
+                    await updateBlockProps(uid, { due: nextStr });
+                    if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", nextStr);
+                    toast(`Due → ${nextStr}`);
+                  } else {
+                    // default: open due page in right sidebar
+                    const title = toDnpTitle(d);
+                    const dnpUid = await getOrCreatePageUid(title);
+                    window.roamAlphaAPI.ui.rightSidebar.addWindow({ window: { type: "outline", "block-uid": dnpUid }});
+                  }
+                }
+              ));
+            }
+
+            if (check?.nextSibling) {
+              check.parentNode.insertBefore(pillWrap, check.nextSibling);
+            } else {
+              main.appendChild(pillWrap);
+            }
+          }).catch(() => {});
+        } catch {}
+      }
+    }
+
+    // ========================= Housekeeping =========================
+    function sweepProcessed() {
+      const now = Date.now();
+      if (now - lastSweep < 60_000) return; // once per minute
+      lastSweep = now;
+      for (const [k, v] of processedMap) {
+        if (now - v > 5 * 60_000) processedMap.delete(k); // 5 min TTL
+      }
     }
   },
 
