@@ -74,6 +74,366 @@ export default {
     }
 
     const processedMap = new Map();
+    const repeatOverrides = new Map();
+
+    function normalizeOverrideEntry(entry) {
+      if (!entry) return null;
+      if (typeof entry === "string") {
+        const normalized = normalizeRepeatRuleText(entry) || entry;
+        return normalized ? { repeat: normalized } : null;
+      }
+      if (typeof entry === "object") {
+        const out = {};
+        if (typeof entry.repeat === "string" && entry.repeat) {
+          out.repeat = normalizeRepeatRuleText(entry.repeat) || entry.repeat;
+        }
+        if (entry.due instanceof Date && !Number.isNaN(entry.due.getTime())) {
+          out.due = entry.due;
+        }
+        return Object.keys(out).length ? out : null;
+      }
+      return null;
+    }
+
+    function mergeRepeatOverride(uid, patch) {
+      if (!uid || !patch) return;
+      const current = normalizeOverrideEntry(repeatOverrides.get(uid)) || {};
+      const next = { ...current };
+      if (typeof patch.repeat === "string" && patch.repeat) {
+        next.repeat = normalizeRepeatRuleText(patch.repeat) || patch.repeat;
+      }
+      if (patch.due instanceof Date && !Number.isNaN(patch.due.getTime())) {
+        next.due = patch.due;
+      }
+      if (patch.due === null) {
+        delete next.due;
+      }
+      if (!next.repeat && !next.due) {
+        repeatOverrides.delete(uid);
+        return;
+      }
+      repeatOverrides.set(uid, next);
+    }
+
+    function captureBlockLocation(block) {
+      const parents = Array.isArray(block?.parents) ? block.parents : [];
+      const parentUid = parents.length ? parents[0]?.uid : block?.page?.uid || null;
+      const order = typeof block?.order === "number" ? block.order : 0;
+      return { parentUid, order };
+    }
+
+    function prepareDueChangeContext(block, meta, set) {
+      const props = parseProps(block?.props);
+      const inlineAttrs = parseAttrsFromBlockText(block?.string || "");
+      const location = captureBlockLocation(block);
+      const childMap = meta?.childAttrMap || {};
+      const dueInfo = childMap["due"] || null;
+      const repeatInfo = childMap["repeat"] || null;
+      const snapshot = captureBlockSnapshot(block);
+      const previousDueDate =
+        meta?.due instanceof Date && !Number.isNaN(meta.due.getTime()) ? new Date(meta.due.getTime()) : null;
+      const previousDueStr =
+        typeof props?.due === "string"
+          ? props.due
+          : previousDueDate
+            ? formatDate(previousDueDate, set)
+            : null;
+      return {
+        previousDueDate,
+        previousDueStr,
+        previousInlineDue: inlineAttrs?.due || null,
+        hadInlineDue: inlineAttrs?.due != null,
+        previousChildDue: dueInfo?.value || null,
+        hadChildDue: !!dueInfo,
+        previousChildDueUid: dueInfo?.uid || null,
+        previousChildRepeat: repeatInfo?.value || null,
+        previousChildRepeatUid: repeatInfo?.uid || null,
+        previousParentUid: location.parentUid,
+        previousOrder: location.order,
+        previousProps: props && typeof props === "object" ? clonePlain(props) : {},
+        previousInlineRepeat: inlineAttrs?.repeat || null,
+        hadInlineRepeat: inlineAttrs?.repeat != null,
+        snapshot,
+      };
+    }
+
+    const dueUndoRegistry = new Map();
+
+    function registerDueUndoAction(payload) {
+      if (!payload?.blockUid) return;
+      dueUndoRegistry.set(payload.blockUid, payload);
+      iziToast.show({
+        theme: "light",
+        color: "black",
+        class: "recTasks",
+        position: "center",
+        timeout: 5000,
+        close: true,
+        closeOnClick: false,
+        message: payload.message || "Due updated",
+        buttons: [
+          [
+            "<button>Undo</button>",
+            (instance, toastEl) => {
+              instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+              performDueUndo(payload).catch((err) => console.error("[RecurringTasks] due undo failed", err));
+            },
+            true,
+          ],
+        ],
+        onClosed: () => {
+          dueUndoRegistry.delete(payload.blockUid);
+        },
+      });
+    }
+
+    async function performDueUndo(payload) {
+      if (!payload?.blockUid) return;
+      dueUndoRegistry.delete(payload.blockUid);
+      const uid = payload.blockUid;
+      repeatOverrides.delete(uid);
+      const set = payload.setSnapshot || S();
+      const snapshot = payload.snapshot || null;
+      try {
+        // Move back before restoring metadata so child updates apply under the correct parent
+        if (payload.wasMoved && payload.previousParentUid && payload.previousParentUid !== payload.newParentUid) {
+          try {
+            const order = payload.previousOrder != null ? payload.previousOrder : 0;
+            await window.roamAlphaAPI.moveBlock({
+              location: { "parent-uid": payload.previousParentUid, order },
+              block: { uid },
+            });
+          } catch (err) {
+            console.warn("[RecurringTasks] undo move failed", err);
+          }
+        }
+        let block = await getBlock(uid);
+
+        if (snapshot) {
+          if (typeof snapshot.string === "string" && block?.string !== snapshot.string) {
+            await updateBlockString(uid, snapshot.string);
+            block = await getBlock(uid);
+          }
+          await setBlockProps(uid, snapshot.props || {});
+          block = await getBlock(uid);
+
+          if (set.attributeSurface === "Child") {
+            // Clear current attrs first to avoid duplicates
+            await removeChildAttr(uid, "repeat");
+            await removeChildAttr(uid, "due");
+            await removeChildAttr(uid, "rt-processed");
+            const childAttrs = snapshot.childAttrs || {};
+            if (childAttrs.repeat?.value != null && childAttrs.repeat.value !== "") {
+              await ensureChildAttr(uid, "repeat", childAttrs.repeat.value);
+            }
+            if (childAttrs.due?.value != null && childAttrs.due.value !== "") {
+              await ensureChildAttr(uid, "due", childAttrs.due.value);
+            }
+            if (childAttrs["rt-processed"]?.value != null && childAttrs["rt-processed"].value !== "") {
+              await ensureChildAttr(uid, "rt-processed", childAttrs["rt-processed"].value);
+            }
+          } else if (payload.hadInlineDue && typeof payload.previousInlineDue === "string" && block?.string) {
+            const restored = replaceAttributeInString(block.string, "due", payload.previousInlineDue);
+            if (restored && restored !== block.string) {
+              await updateBlockString(uid, restored);
+              block = await getBlock(uid);
+            }
+            if (payload.hadInlineRepeat && typeof payload.previousInlineRepeat === "string") {
+              const repeatRestored = replaceAttributeInString(block.string || "", "repeat", payload.previousInlineRepeat);
+              if (repeatRestored && repeatRestored !== (block.string || "")) {
+                await updateBlockString(uid, repeatRestored);
+                block = await getBlock(uid);
+              }
+            }
+          }
+        } else {
+          const propsUpdate = {};
+          if (payload.previousDueStr) propsUpdate.due = payload.previousDueStr;
+          else propsUpdate.due = undefined;
+          if (payload.previousInlineRepeat || payload.previousChildRepeat) {
+            propsUpdate.repeat = payload.previousInlineRepeat || payload.previousChildRepeat;
+          } else {
+            propsUpdate.repeat = undefined;
+          }
+          await updateBlockProps(uid, propsUpdate);
+          block = await getBlock(uid);
+          if (set.attributeSurface === "Child") {
+            if (payload.previousChildRepeat != null) {
+              await ensureChildAttr(uid, "repeat", payload.previousChildRepeat);
+            } else {
+              await removeChildAttr(uid, "repeat");
+            }
+            if (payload.hadChildDue && payload.previousChildDue != null) {
+              await ensureChildAttr(uid, "due", payload.previousChildDue);
+            } else {
+              await removeChildAttr(uid, "due");
+            }
+            if (snapshot?.childAttrs?.["rt-processed"]?.value != null && snapshot.childAttrs["rt-processed"].value !== "") {
+              await ensureChildAttr(uid, "rt-processed", snapshot.childAttrs["rt-processed"].value);
+            } else {
+              await removeChildAttr(uid, "rt-processed");
+            }
+          } else if (payload.hadInlineDue && block?.string) {
+            const restored = replaceAttributeInString(block.string, "due", payload.previousInlineDue || "");
+            if (restored && restored !== block.string) {
+              await updateBlockString(uid, restored);
+              block = await getBlock(uid);
+            }
+            if (payload.hadInlineRepeat && typeof payload.previousInlineRepeat === "string") {
+              const repeatRestored = replaceAttributeInString(block.string || "", "repeat", payload.previousInlineRepeat);
+              if (repeatRestored && repeatRestored !== (block.string || "")) {
+                await updateBlockString(uid, repeatRestored);
+                block = await getBlock(uid);
+              }
+            }
+          }
+        }
+
+        const previousDueDate =
+          payload.previousDueDate instanceof Date && !Number.isNaN(payload.previousDueDate.getTime())
+            ? new Date(payload.previousDueDate.getTime())
+            : null;
+        const snapshotRepeat =
+          snapshot?.props?.repeat ||
+          snapshot?.childAttrs?.repeat?.value ||
+          payload.previousInlineRepeat ||
+          payload.previousChildRepeat ||
+          null;
+
+        const normalizedRepeat =
+          snapshotRepeat != null
+            ? normalizeRepeatRuleText(snapshotRepeat) || snapshotRepeat
+            : payload.previousInlineRepeat != null
+            ? normalizeRepeatRuleText(payload.previousInlineRepeat) || payload.previousInlineRepeat
+            : payload.previousChildRepeat != null
+            ? normalizeRepeatRuleText(payload.previousChildRepeat) || payload.previousChildRepeat
+            : undefined;
+        const restoreDueStr =
+          payload.previousDueStr != null
+            ? payload.previousDueStr
+            : previousDueDate
+            ? formatDate(previousDueDate, set)
+            : undefined;
+        const restoreDueDate = restoreDueStr ? parseRoamDate(restoreDueStr) || previousDueDate : previousDueDate;
+
+        const propsPatch = {};
+        if (set.attributeSurface !== "Child" && normalizedRepeat !== undefined) {
+          propsPatch.repeat = normalizedRepeat;
+        }
+        if (restoreDueStr !== undefined) {
+          propsPatch.due = restoreDueStr;
+        }
+        if (Object.keys(propsPatch).length) {
+          await updateBlockProps(uid, propsPatch);
+        }
+
+        const overridePatch = {};
+        if (normalizedRepeat) overridePatch.repeat = normalizedRepeat;
+        if (restoreDueStr !== undefined) {
+          if (restoreDueDate instanceof Date && !Number.isNaN(restoreDueDate.getTime())) {
+            overridePatch.due = restoreDueDate;
+          } else {
+            overridePatch.due = null;
+          }
+        }
+
+        if (Object.keys(overridePatch).length) {
+          mergeRepeatOverride(uid, overridePatch);
+        } else {
+          repeatOverrides.delete(uid);
+        }
+
+        toast("Changes un-done successfully");
+      } catch (err) {
+        console.warn("[RecurringTasks] due undo error", err);
+      }
+      void syncPillsForSurface(lastAttrSurface);
+    }
+
+    async function ensureTargetReady(dueDate, prevBlock, set) {
+      let uid = null;
+      try {
+        uid = await chooseTargetPageUid(dueDate, prevBlock, set);
+      } catch (err) {
+        console.warn("[RecurringTasks] choose target failed (initial)", err);
+      }
+      if (!uid) return null;
+      // Wait for Roam's DB/index to see the newly created page/heading
+      for (let i = 0; i < 5; i++) {
+        const exists = await getBlock(uid);
+        if (exists) return uid;
+        await delay(60 * (i + 1)); // 60ms, 120ms, 180ms, ...
+      }
+      // Last resort: explicitly (re)create the expected target
+      try {
+        if (set.destination === "DNP under heading" && set.dnpHeading) {
+          const dnpTitle = toDnpTitle(dueDate);
+          const dnpUid = await getOrCreatePageUid(dnpTitle);
+          uid = await getOrCreateChildUnderHeading(dnpUid, set.dnpHeading);
+        } else if (set.destination !== "Same Page") {
+          const dnpTitle = toDnpTitle(dueDate);
+          uid = await getOrCreatePageUid(dnpTitle);
+        }
+      } catch (err) {
+        console.warn("[RecurringTasks] ensureTargetReady fallback failed", err);
+      }
+      return uid;
+    }
+
+    async function relocateBlockForDue(block, dueDate, set, meta = null) {
+      const locationBefore = captureBlockLocation(block);
+      const result = {
+        moved: false,
+        targetUid: locationBefore.parentUid,
+        previousParentUid: locationBefore.parentUid,
+        previousOrder: locationBefore.order,
+      };
+      if (!block || !set) return result;
+      const hasDue = dueDate instanceof Date && !Number.isNaN(dueDate.getTime());
+      let targetUid = locationBefore.parentUid;
+      if (hasDue && set.destination !== "Same Page") {
+        targetUid = await ensureTargetReady(dueDate, block, set);
+      }
+      if (targetUid) result.targetUid = targetUid;
+      if (hasDue && set.destination !== "Same Page" && targetUid && targetUid !== locationBefore.parentUid) {
+        try {
+          await window.roamAlphaAPI.moveBlock({
+            location: { "parent-uid": targetUid, order: 0 },
+            block: { uid: block.uid },
+          });
+          result.moved = true;
+        } catch (err) {
+          console.warn("[RecurringTasks] relocateBlockForDue failed", err);
+        }
+      }
+      await delay(40);
+      try {
+        const latest = await getBlock(block.uid);
+        const props = parseProps(latest?.props);
+        const updates = {};
+        const repeatValue = meta?.repeat || props.repeat || null;
+        const dueStr = hasDue ? formatDate(dueDate, set) : null;
+        if (repeatValue && !props.repeat) updates.repeat = repeatValue;
+        if (dueStr) {
+          if (props.due !== dueStr) updates.due = dueStr;
+        } else if (props.due) {
+          updates.due = undefined;
+        }
+        if (Object.keys(updates).length) {
+          await updateBlockProps(block.uid, updates);
+        }
+        if (set.attributeSurface === "Child") {
+          const childMap = (meta && meta.childAttrMap) || {};
+          const repeatChildVal = childMap.repeat?.value || repeatValue;
+          if (repeatChildVal) await ensureChildAttr(block.uid, "repeat", repeatChildVal);
+          if (dueStr) await ensureChildAttr(block.uid, "due", dueStr);
+          else if (childMap.due) await removeChildAttr(block.uid, "due");
+        }
+      } catch (err) {
+        console.warn("[RecurringTasks] relocate metadata sync failed", err);
+      }
+      return result;
+    }
     const pendingPillTimers = new Map();
     const childEditDebounce = new Map(); // parentUid -> timer
     let observer = null;
@@ -313,6 +673,17 @@ export default {
                 }
 
                 const snapshot = captureBlockSnapshot(block);
+                const overrideEntry = normalizeOverrideEntry(repeatOverrides.get(uid));
+                const overrideRepeat = overrideEntry?.repeat || null;
+                const overrideDue = overrideEntry?.due || null;
+                if (overrideRepeat) {
+                  meta.repeat = overrideRepeat;
+                  meta.props = { ...(meta.props || {}), repeat: overrideRepeat };
+                }
+                if (overrideDue) {
+                  meta.due = overrideDue;
+                  meta.props = { ...(meta.props || {}), due: formatDate(overrideDue, set) };
+                }
                 const completion = await markCompleted(block, meta, set);
                 processedMap.set(uid, completion.processedAt);
 
@@ -322,7 +693,20 @@ export default {
                   meta,
                   set
                 );
-                const nextDue = computeNextDue(resolvedMeta, set);
+                if (overrideRepeat) {
+                  resolvedMeta.repeat = overrideRepeat;
+                  resolvedMeta.props = { ...(resolvedMeta.props || {}), repeat: overrideRepeat };
+                }
+                if (overrideDue) {
+                  resolvedMeta.due = overrideDue;
+                  resolvedMeta.props = { ...(resolvedMeta.props || {}), due: formatDate(overrideDue, set) };
+                }
+                const overrideRule = overrideRepeat ? parseRuleText(overrideRepeat) : null;
+                const nextDueCandidate =
+                  overrideDue && overrideDue instanceof Date && !Number.isNaN(overrideDue.getTime())
+                    ? overrideDue
+                    : null;
+                const nextDue = nextDueCandidate || computeNextDue(resolvedMeta, set, 0, overrideRule);
                 if (!nextDue) {
                   processedMap.delete(uid);
                   continue;
@@ -337,7 +721,14 @@ export default {
                   newBlockUid: newUid,
                   nextDue,
                   set,
+                  overrideEntry: overrideEntry
+                    ? {
+                      ...(overrideEntry.repeat ? { repeat: overrideEntry.repeat } : {}),
+                      ...(overrideEntry.due ? { due: new Date(overrideEntry.due.getTime()) } : {}),
+                    }
+                    : null,
                 });
+                repeatOverrides.delete(uid);
               } catch (err) {
                 console.error("[RecurringTasks] error:", err);
                 processedMap.delete(uid); // allow retry on failure
@@ -359,17 +750,30 @@ export default {
 
     async function getBlock(uid) {
       const res = await window.roamAlphaAPI.q(`
-        [:find (pull ?b [:block/uid :block/string :block/props
+        [:find (pull ?b [:block/uid :block/string :block/props :block/order
                          {:block/children [:block/uid :block/string]}
-                         {:block/page [:block/uid :node/title]}])
+                         {:block/page [:block/uid :node/title]}
+                         {:block/parents [:block/uid]}])
          :where [?b :block/uid "${uid}"]]`);
       return res?.[0]?.[0] || null;
     }
 
+    function clonePlain(value) {
+      if (value == null || typeof value !== "object") return value;
+      if (value instanceof Date) return new Date(value.getTime());
+      if (Array.isArray(value)) return value.map((item) => clonePlain(item));
+      const out = {};
+      for (const key of Object.keys(value)) {
+        out[key] = clonePlain(value[key]);
+      }
+      return out;
+    }
+
     function captureBlockSnapshot(block) {
+      const props = parseProps(block?.props);
       return {
         string: block?.string || "",
-        props: parseProps(block?.props),
+        props: props && typeof props === "object" ? clonePlain(props) : {},
         childAttrs: parseAttrsFromChildBlocks(block?.children || []),
       };
     }
@@ -504,7 +908,16 @@ export default {
         }
       }
 
-      repeatText = normalizeRepeatRuleText(repeatText);
+      const overrideEntry = normalizeOverrideEntry(repeatOverrides.get(block.uid));
+      const overrideRepeat = overrideEntry?.repeat || null;
+      if (overrideRepeat) {
+        repeatText = normalizeRepeatRuleText(overrideRepeat) || overrideRepeat;
+      } else {
+        repeatText = normalizeRepeatRuleText(repeatText);
+      }
+      if (overrideEntry?.due) {
+        dueDate = overrideEntry.due;
+      }
 
       return {
         uid: block.uid,
@@ -748,7 +1161,7 @@ export default {
     }
 
     async function performUndo(data) {
-      const { blockUid, snapshot, completion, newBlockUid, set } = data;
+      const { blockUid, snapshot, completion, newBlockUid, set, overrideEntry } = data;
       undoRegistry.delete(blockUid);
       try {
         const restoredString = normalizeToTodoMacro(snapshot.string);
@@ -760,6 +1173,41 @@ export default {
         await setBlockProps(blockUid, snapshot.props);
       } catch (err) {
         console.warn("[RecurringTasks] undo props failed", err);
+      }
+
+      // === NEW: restore repeat/due depending on surface ===
+      try {
+        const surface = (set && set.attributeSurface) || lastAttrSurface || "Child";
+        const hadRepeatChild = !!snapshot.childAttrs?.["repeat"];
+        const hadDueChild = !!snapshot.childAttrs?.["due"];
+
+        if (surface === "Child") {
+          // Rebuild the child attributes exactly as they were
+          if (hadRepeatChild) {
+            await ensureChildAttr(blockUid, "repeat", snapshot.childAttrs["repeat"].value || "");
+          } else {
+            await removeChildAttr(blockUid, "repeat");
+          }
+          if (hadDueChild) {
+            await ensureChildAttr(blockUid, "due", snapshot.childAttrs["due"].value || "");
+          } else {
+            await removeChildAttr(blockUid, "due");
+          }
+        } else {
+          // Hidden: ensure repeat/due live in props (pills read from props)
+          const needRepeat =
+            !snapshot.props?.repeat && !!snapshot.childAttrs?.["repeat"]?.value;
+          const needDue =
+            !snapshot.props?.due && !!snapshot.childAttrs?.["due"]?.value;
+          if (needRepeat || needDue) {
+            const merge = {};
+            if (needRepeat) merge.repeat = snapshot.childAttrs["repeat"].value;
+            if (needDue) merge.due = snapshot.childAttrs["due"].value;
+            await updateBlockProps(blockUid, merge);
+          }
+        }
+      } catch (err) {
+        console.warn("[RecurringTasks] undo restore repeat/due failed", err);
       }
 
       if (newBlockUid) {
@@ -788,7 +1236,8 @@ export default {
 
       processedMap.set(blockUid, Date.now());
       setTimeout(() => processedMap.delete(blockUid), 750);
-      toast("Recurring task restored");
+      if (overrideEntry) mergeRepeatOverride(blockUid, overrideEntry);
+      toast("Changes un-done successfully");
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1021,8 +1470,8 @@ export default {
       return null;
     }
 
-    function computeNextDue(meta, set, depth = 0) {
-      const rule = parseRuleText(meta.repeat);
+    function computeNextDue(meta, set, depth = 0, ruleOverride = null) {
+      const rule = ruleOverride || parseRuleText(meta.repeat);
       if (!rule) {
         console.warn(`[RecurringTasks] Unable to parse repeat rule "${meta.repeat}"`);
         return null;
@@ -1052,7 +1501,7 @@ export default {
       const today = todayLocal();
       if (next < today && depth < 36) {
         const updatedMeta = { ...meta, due: next };
-        return computeNextDue(updatedMeta, set, depth + 1);
+        return computeNextDue(updatedMeta, set, depth + 1, ruleOverride);
       }
       return next;
     }
@@ -1268,8 +1717,23 @@ export default {
         });
       });
     }
+/*
+    function ensureToastStyles() {
+      if (document.getElementById("rt-toast-style")) return;
+      const style = document.createElement("style");
+      style.id = "rt-toast-style";
+      style.textContent = `
+        .iziToast.recTasks .iziToast-body {
+          display: flex;
+          align-items: center;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    */
 
     function toast(msg) {
+      // ensureToastStyles();
       iziToast.show({
         theme: 'light',
         color: 'black',
@@ -1308,7 +1772,7 @@ export default {
           theme: "light",
           color: "black",
           layout: 2,
-          class: "recTasks",
+          class: "recTasks2",
           position: "center",
           drag: false,
           timeout: false,
@@ -1635,7 +2099,9 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       const current = meta.repeat || "";
+      const priorDue = contextSnapshot.previousDueDate;
       if (event.altKey) {
         try {
           await navigator.clipboard?.writeText?.(current);
@@ -1652,15 +2118,85 @@ export default {
         initial: current,
       });
       if (!next || next === current) return;
-      await updateBlockProps(uid, { repeat: next });
-      if (set.attributeSurface === "Child") await ensureChildAttr(uid, "repeat", next);
-      await ensureInlineAttribute(block, "repeat", next);
-      const normalized = normalizeRepeatRuleText(next) || next;
+      const normalized = normalizeRepeatRuleText(next) || next.trim();
+      const rule = parseRuleText(normalized);
+      const metaForCalc = { ...meta, repeat: normalized };
+      const anchorMeta = { ...metaForCalc, due: metaForCalc.due || todayLocal() };
+      let newDueDate = null;
+      if (rule) {
+        const anchorSet = { ...set, advanceFrom: "Due" };
+        newDueDate = computeNextDue(anchorMeta, anchorSet, 0, rule);
+      }
+      const dueDateToPersist = newDueDate || priorDue || null;
+      const updates = { repeat: normalized };
+      if (dueDateToPersist) {
+        updates.due = formatDate(dueDateToPersist, set);
+      }
+      await updateBlockProps(uid, updates);
+      if (set.attributeSurface === "Child") {
+        meta.childAttrMap = meta.childAttrMap || {};
+        const repeatRes = await ensureChildAttr(uid, "repeat", normalized);
+        meta.childAttrMap.repeat = { uid: repeatRes.uid, value: normalized };
+        if (dueDateToPersist) {
+          const dueRes = await ensureChildAttr(uid, "due", updates.due);
+          meta.childAttrMap.due = { uid: dueRes.uid, value: updates.due };
+        } else if (meta.childAttrMap.due) {
+          await removeChildAttr(uid, "due");
+          delete meta.childAttrMap.due;
+        }
+      }
+      await ensureInlineAttribute(block, "repeat", normalized);
+      if (dueDateToPersist) await ensureInlineAttribute(block, "due", updates.due);
+      meta.repeat = normalized;
+      meta.due = dueDateToPersist || null;
+      mergeRepeatOverride(uid, { repeat: normalized, due: dueDateToPersist || null });
+      const relocation = await relocateBlockForDue(block, dueDateToPersist || null, set, meta);
       span.textContent = `↻ ${normalized}`;
       span.title = `Repeat rule: ${normalized}`;
       const pill = span.closest(".rt-pill");
-      if (pill) pill.title = pill.title?.replace(current, normalized) || pill.title;
+      if (pill) {
+        const dueSpanEl = pill.querySelector(".rt-pill-due");
+        if (dueDateToPersist && dueSpanEl) {
+          const friendly = formatFriendlyDate(dueDateToPersist, set);
+          const tooltip = `Next occurrence: ${formatIsoDate(dueDateToPersist, set)}`;
+          dueSpanEl.textContent = `Next: ${friendly}`;
+          dueSpanEl.title = tooltip;
+          pill.title = tooltip;
+        } else {
+          pill.title = `Repeat rule: ${normalized}`;
+        }
+      }
       toast(`Repeat → ${normalized}`);
+      const dueChanged =
+        (priorDue ? priorDue.getTime() : null) !== (dueDateToPersist ? dueDateToPersist.getTime() : null);
+      if (dueChanged || relocation.moved) {
+        const message = dueDateToPersist
+          ? `Next occurrence → [[${formatRoamDateTitle(dueDateToPersist)}]]`
+          : "Next occurrence cleared";
+        registerDueUndoAction({
+          blockUid: uid,
+          message,
+          setSnapshot: { ...set },
+          previousDueDate: priorDue ? new Date(priorDue.getTime()) : null,
+          previousDueStr: contextSnapshot.previousDueStr || null,
+          previousInlineDue: contextSnapshot.previousInlineDue,
+          hadInlineDue: contextSnapshot.hadInlineDue,
+          previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+          hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+          previousChildDue: contextSnapshot.previousChildDue,
+          previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+          hadChildDue: contextSnapshot.hadChildDue,
+          previousChildRepeat: contextSnapshot.previousChildRepeat,
+          previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+          previousParentUid: contextSnapshot.previousParentUid,
+          previousOrder: contextSnapshot.previousOrder,
+          newDue: dueDateToPersist ? new Date(dueDateToPersist.getTime()) : null,
+          newDueStr: dueDateToPersist ? formatDate(dueDateToPersist, set) : null,
+          newParentUid: relocation.targetUid,
+          wasMoved: relocation.moved,
+          snapshot: contextSnapshot.snapshot,
+        });
+      }
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1669,6 +2205,7 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       const due = meta.due;
       if (!due) return;
       if (event.altKey || event.metaKey || event.ctrlKey) {
@@ -1681,14 +2218,50 @@ export default {
         });
         if (!next) return;
         await updateBlockProps(uid, { due: next });
-        if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", next);
+        let dueChildInfo = null;
+        if (set.attributeSurface === "Child") {
+          dueChildInfo = await ensureChildAttr(uid, "due", next);
+        }
         await ensureInlineAttribute(block, "due", next);
         const parsed = parseRoamDate(next) || todayLocal();
+        meta.due = parsed;
+        if (set.attributeSurface === "Child") {
+          meta.childAttrMap = meta.childAttrMap || {};
+          meta.childAttrMap.due = { value: next, uid: dueChildInfo?.uid || meta.childAttrMap.due?.uid || null };
+        }
+        mergeRepeatOverride(uid, { due: parsed });
+        const relocation = await relocateBlockForDue(block, parsed, set, meta);
         span.textContent = `Next: ${formatFriendlyDate(parsed, set)}`;
         span.title = `Next occurrence: ${formatIsoDate(parsed, set)}`;
         const pill = span.closest(".rt-pill");
         if (pill) pill.title = span.title;
-        toast(`Due → ${next}`);
+        const dueChanged =
+          (contextSnapshot.previousDueDate ? contextSnapshot.previousDueDate.getTime() : null) !== parsed.getTime();
+        if (dueChanged || relocation.moved) {
+          registerDueUndoAction({
+            blockUid: uid,
+            message: `Due date changed to ${formatRoamDateTitle(parsed)}`,
+            setSnapshot: { ...set },
+            previousDueDate: contextSnapshot.previousDueDate ? new Date(contextSnapshot.previousDueDate.getTime()) : null,
+            previousDueStr: contextSnapshot.previousDueStr || null,
+            previousInlineDue: contextSnapshot.previousInlineDue,
+            hadInlineDue: contextSnapshot.hadInlineDue,
+            previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+            hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+            previousChildDue: contextSnapshot.previousChildDue,
+            previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+            hadChildDue: contextSnapshot.hadChildDue,
+            previousChildRepeat: contextSnapshot.previousChildRepeat,
+            previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+            previousParentUid: contextSnapshot.previousParentUid,
+            previousOrder: contextSnapshot.previousOrder,
+            newDue: new Date(parsed.getTime()),
+            newDueStr: next,
+            newParentUid: relocation.targetUid,
+            wasMoved: relocation.moved,
+            snapshot: contextSnapshot.snapshot,
+          });
+        }
         void syncPillsForSurface(lastAttrSurface);
         return;
       }
@@ -1788,13 +2361,50 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       const base = meta.due || todayLocal();
       const next = addDaysLocal(base, days);
       const nextStr = formatDate(next, set);
       await updateBlockProps(uid, { due: nextStr });
-      if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", nextStr);
+      let dueChildInfo = null;
+      if (set.attributeSurface === "Child") {
+        dueChildInfo = await ensureChildAttr(uid, "due", nextStr);
+        meta.childAttrMap = meta.childAttrMap || {};
+        meta.childAttrMap.due = { value: nextStr, uid: dueChildInfo?.uid || meta.childAttrMap.due?.uid || null };
+      }
       await ensureInlineAttribute(block, "due", nextStr);
-      toast(`Due → ${nextStr}`);
+      meta.due = next;
+      mergeRepeatOverride(uid, { due: next });
+      const relocation = await relocateBlockForDue(block, next, set, meta);
+      const dueChanged =
+        (contextSnapshot.previousDueDate ? contextSnapshot.previousDueDate.getTime() : null) !== next.getTime();
+      if (dueChanged || relocation.moved) {
+        registerDueUndoAction({
+          blockUid: uid,
+          message: `Snoozed to ${formatRoamDateTitle(next)}`,
+          setSnapshot: { ...set },
+          previousDueDate: contextSnapshot.previousDueDate
+            ? new Date(contextSnapshot.previousDueDate.getTime())
+            : null,
+          previousDueStr: contextSnapshot.previousDueStr || null,
+          previousInlineDue: contextSnapshot.previousInlineDue,
+          hadInlineDue: contextSnapshot.hadInlineDue,
+          previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+          hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+          previousChildDue: contextSnapshot.previousChildDue,
+          previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+          hadChildDue: contextSnapshot.hadChildDue,
+          previousChildRepeat: contextSnapshot.previousChildRepeat,
+          previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+          previousParentUid: contextSnapshot.previousParentUid,
+          previousOrder: contextSnapshot.previousOrder,
+          newDue: new Date(next.getTime()),
+          newDueStr: nextStr,
+          newParentUid: relocation.targetUid,
+          wasMoved: relocation.moved,
+          snapshot: contextSnapshot.snapshot,
+        });
+      }
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1802,6 +2412,7 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       let base = meta.due || todayLocal();
       for (let i = 0; i < 7; i++) {
         base = addDaysLocal(base, 1);
@@ -1809,9 +2420,46 @@ export default {
       }
       const nextStr = formatDate(base, set);
       await updateBlockProps(uid, { due: nextStr });
-      if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", nextStr);
+      let dueChildInfo = null;
+      if (set.attributeSurface === "Child") {
+        dueChildInfo = await ensureChildAttr(uid, "due", nextStr);
+        meta.childAttrMap = meta.childAttrMap || {};
+        meta.childAttrMap.due = {
+          value: nextStr,
+          uid: dueChildInfo?.uid || meta.childAttrMap.due?.uid || null,
+        };
+      }
       await ensureInlineAttribute(block, "due", nextStr);
-      toast(`Due → ${nextStr}`);
+      meta.due = base;
+      mergeRepeatOverride(uid, { due: base });
+      const relocation = await relocateBlockForDue(block, base, set, meta);
+      const dueChanged =
+        (contextSnapshot.previousDueDate ? contextSnapshot.previousDueDate.getTime() : null) !== base.getTime();
+      if (dueChanged || relocation.moved) {
+        registerDueUndoAction({
+          blockUid: uid,
+          message: `Due date changed to ${formatRoamDateTitle(base)}`,
+          setSnapshot: { ...set },
+          previousDueDate: contextSnapshot.previousDueDate ? new Date(contextSnapshot.previousDueDate.getTime()) : null,
+          previousDueStr: contextSnapshot.previousDueStr || null,
+          previousInlineDue: contextSnapshot.previousInlineDue,
+          hadInlineDue: contextSnapshot.hadInlineDue,
+          previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+          hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+          previousChildDue: contextSnapshot.previousChildDue,
+          previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+          hadChildDue: contextSnapshot.hadChildDue,
+          previousChildRepeat: contextSnapshot.previousChildRepeat,
+          previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+          previousParentUid: contextSnapshot.previousParentUid,
+          previousOrder: contextSnapshot.previousOrder,
+          newDue: new Date(base.getTime()),
+          newDueStr: nextStr,
+          newParentUid: relocation.targetUid,
+          wasMoved: relocation.moved,
+          snapshot: contextSnapshot.snapshot,
+        });
+      }
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1819,6 +2467,7 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       const initial = meta.due ? formatIsoDate(meta.due, set) : "";
       const next = await promptForValue({
         title: "Snooze until",
@@ -1828,9 +2477,47 @@ export default {
       });
       if (!next) return;
       await updateBlockProps(uid, { due: next });
-      if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", next);
+      let dueChildInfo = null;
+      if (set.attributeSurface === "Child") {
+        dueChildInfo = await ensureChildAttr(uid, "due", next);
+        meta.childAttrMap = meta.childAttrMap || {};
+        meta.childAttrMap.due = {
+          value: next,
+          uid: dueChildInfo?.uid || meta.childAttrMap.due?.uid || null,
+        };
+      }
       await ensureInlineAttribute(block, "due", next);
-      toast(`Due → ${next}`);
+      const parsed = parseRoamDate(next) || todayLocal();
+      meta.due = parsed;
+      mergeRepeatOverride(uid, { due: parsed });
+      const relocation = await relocateBlockForDue(block, parsed, set, meta);
+      const dueChanged =
+        (contextSnapshot.previousDueDate ? contextSnapshot.previousDueDate.getTime() : null) !== parsed.getTime();
+      if (dueChanged || relocation.moved) {
+        registerDueUndoAction({
+          blockUid: uid,
+          message: `Due date changed to ${formatRoamDateTitle(parsed)}`,
+          setSnapshot: { ...set },
+          previousDueDate: contextSnapshot.previousDueDate ? new Date(contextSnapshot.previousDueDate.getTime()) : null,
+          previousDueStr: contextSnapshot.previousDueStr || null,
+          previousInlineDue: contextSnapshot.previousInlineDue,
+          hadInlineDue: contextSnapshot.hadInlineDue,
+          previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+          hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+          previousChildDue: contextSnapshot.previousChildDue,
+          previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+          hadChildDue: contextSnapshot.hadChildDue,
+          previousChildRepeat: contextSnapshot.previousChildRepeat,
+          previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+          previousParentUid: contextSnapshot.previousParentUid,
+          previousOrder: contextSnapshot.previousOrder,
+          newDue: new Date(parsed.getTime()),
+          newDueStr: next,
+          newParentUid: relocation.targetUid,
+          wasMoved: relocation.moved,
+          snapshot: contextSnapshot.snapshot,
+        });
+      }
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1838,6 +2525,7 @@ export default {
       const block = await getBlock(uid);
       if (!block) return;
       const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       if (!meta.repeat) {
         toast("No repeat rule to skip.");
         return;
@@ -1849,9 +2537,46 @@ export default {
       }
       const nextStr = formatDate(nextDue, set);
       await updateBlockProps(uid, { due: nextStr });
-      if (set.attributeSurface === "Child") await ensureChildAttr(uid, "due", nextStr);
+      let dueChildInfo = null;
+      if (set.attributeSurface === "Child") {
+        dueChildInfo = await ensureChildAttr(uid, "due", nextStr);
+        meta.childAttrMap = meta.childAttrMap || {};
+        meta.childAttrMap.due = {
+          value: nextStr,
+          uid: dueChildInfo?.uid || meta.childAttrMap.due?.uid || null,
+        };
+      }
       await ensureInlineAttribute(block, "due", nextStr);
-      toast(`Skipped → Next ${nextStr}`);
+      meta.due = nextDue;
+      mergeRepeatOverride(uid, { due: nextDue });
+      const relocation = await relocateBlockForDue(block, nextDue, set, meta);
+      const dueChanged =
+        (contextSnapshot.previousDueDate ? contextSnapshot.previousDueDate.getTime() : null) !== nextDue.getTime();
+      if (dueChanged || relocation.moved) {
+        registerDueUndoAction({
+          blockUid: uid,
+          message: `Skipped to ${formatRoamDateTitle(nextDue)}`,
+          setSnapshot: { ...set },
+          previousDueDate: contextSnapshot.previousDueDate ? new Date(contextSnapshot.previousDueDate.getTime()) : null,
+          previousDueStr: contextSnapshot.previousDueStr || null,
+          previousInlineDue: contextSnapshot.previousInlineDue,
+          hadInlineDue: contextSnapshot.hadInlineDue,
+          previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+          hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+          previousChildDue: contextSnapshot.previousChildDue,
+          previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+          hadChildDue: contextSnapshot.hadChildDue,
+          previousChildRepeat: contextSnapshot.previousChildRepeat,
+          previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+          previousParentUid: contextSnapshot.previousParentUid,
+          previousOrder: contextSnapshot.previousOrder,
+          newDue: new Date(nextDue.getTime()),
+          newDueStr: nextStr,
+          newParentUid: relocation.targetUid,
+          wasMoved: relocation.moved,
+          snapshot: contextSnapshot.snapshot,
+        });
+      }
       void syncPillsForSurface(lastAttrSurface);
     }
 
@@ -1877,6 +2602,8 @@ export default {
     async function endRecurrence(uid, set) {
       const block = await getBlock(uid);
       if (!block) return;
+      const meta = await readRecurringMeta(block, set);
+      const contextSnapshot = prepareDueChangeContext(block, meta, set);
       const props = parseProps(block.props);
       delete props.repeat;
       delete props.due;
@@ -1905,10 +2632,35 @@ export default {
       if (cleaned !== block.string) {
         await updateBlockString(uid, cleaned);
       }
-      toast("Recurrence ended");
+      repeatOverrides.delete(uid);
+      registerDueUndoAction({
+        blockUid: uid,
+        message: "Recurrence ended",
+        setSnapshot: { ...set },
+        previousDueDate: contextSnapshot.previousDueDate || null,
+        previousDueStr: contextSnapshot.previousDueStr || null,
+        previousInlineDue: contextSnapshot.previousInlineDue,
+        hadInlineDue: contextSnapshot.hadInlineDue,
+        previousInlineRepeat: contextSnapshot.previousInlineRepeat,
+        hadInlineRepeat: contextSnapshot.hadInlineRepeat,
+        previousChildDue: contextSnapshot.previousChildDue,
+        previousChildDueUid: contextSnapshot.previousChildDueUid || null,
+        hadChildDue: contextSnapshot.hadChildDue,
+        previousChildRepeat: contextSnapshot.previousChildRepeat,
+        previousChildRepeatUid: contextSnapshot.previousChildRepeatUid || null,
+        previousParentUid: contextSnapshot.previousParentUid,
+        previousOrder: contextSnapshot.previousOrder,
+        newDue: null,
+        newDueStr: null,
+        newParentUid: contextSnapshot.previousParentUid,
+        wasMoved: false,
+        snapshot: contextSnapshot.snapshot,
+      });
       void syncPillsForSurface(lastAttrSurface);
     }
 
+    // possible future feature: view series history
+    /* 
     async function openSeriesHistory(uid, set) {
       const history = await fetchSeriesHistory(uid);
       if (!history.length) {
@@ -1966,6 +2718,7 @@ export default {
       }
       return out;
     }
+    */
 
     function formatFriendlyDate(date, set) {
       if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";

@@ -1,6 +1,6 @@
 /* izitoast css */
 .recTasks,
-.recTasks-info {
+.recTasks-info, .recTasks2  {
     max-width: 70%;
     padding: 0 !important;
     display: inline-block;
@@ -39,20 +39,31 @@
     position: relative;
     padding: 0 10px 0 10px;
     height: auto;
-    min-height: 36px;
+    min-height: 52px;
+    margin: 0 15px 0 15px;
+    text-align: left;
+    display: flex;
+    align-items: center;
+}
+
+.recTasks2>.iziToast-body {
+    position: relative;
+    padding: 0 10px 0 10px;
+    height: auto;
+    min-height: 52px;
     margin: 0 15px 0 15px;
     text-align: left;
 }
 
 .recTasks>.iziToast-body .iziToast-texts,
-.recTasks-info>.iziToast-body .iziToast-texts {
+.recTasks-info>.iziToast-body .iziToast-texts, .recTasks2>.iziToast-body .iziToast-texts, .recTasks2-info>.iziToast-body .iziToast-texts {
     margin: 10px 0 0 0;
     padding-right: 2px;
     display: inline-block;
 }
 
 .recTasks>.iziToast-body .iziToast-title,
-.recTasks-info>.iziToast-body .iziToast-title {
+.recTasks-info>.iziToast-body .iziToast-title, .recTasks2>.iziToast-body .iziToast-title, .recTasks2-info>.iziToast-body .iziToast-title {
     padding: 0;
     margin: 0;
     line-height: 20px;
@@ -64,7 +75,7 @@
 }
 
 .recTasks>.iziToast-body .iziToast-message,
-.recTasks-info>.iziToast-body .iziToast-message {
+.recTasks-info>.iziToast-body .iziToast-message, .recTasks2>.iziToast-body .iziToast-message, .recTasks2-info>.iziToast-body .iziToast-message {
     padding: 0;
     margin: 0 0 10px 0;
     font-size: 14px;
@@ -76,15 +87,15 @@
 }
 
 .recTasks>.iziToast-body .iziToast-inputs,
-.recTasks-info>.iziToast-body .iziToast-inputs {
+.recTasks-info>.iziToast-body .iziToast-inputs, .recTasks2>.iziToast-body .iziToast-inputs, .recTasks2-info>.iziToast-body .iziToast-inputs {
     margin-bottom: 10px !important;
 }
 
-.recTasks-info {
+.recTasks-info, .recTasks2-info {
     min-height: 50px !important;
 }
 
-.recTasks-info>.iziToast-body {
+.recTasks-info>.iziToast-body, .recTasks2-info>.iziToast-body {
     position: relative;
     padding: 0 10px 0 10px;
     height: auto;
@@ -97,24 +108,33 @@
 .recTasks.iziToast-animateInside .iziToast-message,
 .recTasks.iziToast-animateInside .iziToast-icon,
 .recTasks.iziToast-animateInside .iziToast-buttons-child,
-.recTasks.iziToast-animateInside .iziToast-inputs-child {
+.recTasks.iziToast-animateInside .iziToast-inputs-child,
+.recTasks2.iziToast-animateInside .iziToast-title,
+.recTasks2.iziToast-animateInside .iziToast-message,
+.recTasks2.iziToast-animateInside .iziToast-icon,
+.recTasks2.iziToast-animateInside .iziToast-buttons-child,
+.recTasks2.iziToast-animateInside .iziToast-inputs-child {
     opacity: 0;
 }
 
-.recTasks>.iziToast-body>.iziToast-inputs>.iziToast-inputs-child {
+.recTasks>.iziToast-body>.iziToast-inputs>.iziToast-inputs-child, 
+.recTasks2>.iziToast-body>.iziToast-inputs>.iziToast-inputs-child {
     color: black !important;
 }
 
-.recTasks>.iziToast-body .iziToast-icon.ico-question {
+.recTasks>.iziToast-body .iziToast-icon.ico-question, 
+.recTasks2>.iziToast-body .iziToast-icon.ico-question {
     background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAQAAAAAYLlVAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAAAmJLR0QAAKqNIzIAAAAJcEhZcwAADdcAAA3XAUIom3gAAAAHdElNRQfhCQkUEhFovxTxAAAEDklEQVRo3s2ZTWgTQRTHf03ipTRUqghNSgsRjHgQrFUQC6JgD1Kak3gQUUoPqRdBglf1oBehBws9Cn4cGk+1SOmh2upBxAYVoeJHrR9tgq0i1Cq0lqYeks7MbpPdmU00/c8hm9n33v/t7Nt5M2+qMEWQI0QIibZKRrQpHvLL2KI2wnQzzBKrDm2RIeKEy01dTYKUI7G1ZRknQXV5yP10kTYgly1NF/5S6duZ8ES+1iZodyaocrjXxE0OFeifYYgp0mRIkwFChAkRJsIxGgrIP+I0n82fvZW5dc/zkss0O2o1c5mX6/TmaDWl77RFe5YkUW3tKEmyFv0lOvXJ/fTYnmCEFuMRbGHEZqVHLyT9DFjUJmkzJl9DG5MWWwM6Llif/gF1nukB6nhgGwUXdFrE+wiURA8QoM9i0zEWWpXQW+ZsyeRrOMuyEo5Fv4gmy4dXPvqcC+pH2VRYaMwy+OWG+iLGCgm0W0Kv9HdvR8ASjmKCXpuK/bxiV/76A/v5UdDIZuKcJGjrnec5KZ7wwsWFOp6xPX/9mt2sqDe7FO+Kf/fXHBPPDWpdXGhTpLvUG9VKwh1xMDDjkvu+cNDFBTk7ptX1QkKZ850m3duu6fcrWxwdaFFyREJ2j4vOpKP6Du6z4uJCv8sYJIVkCnJBGGZaBONO3roY2EqNrSfIPi7SKP4fdXyNUd6I6wbSAHEl33tFLe+FlSsusnK90A0+oEPcuufZgXnOi+u9LrKSJQZQw6LwqBnv2CKsfHORbFbyQhA6xN/pEuihSdj56Co7LWRjPiKie6gkB2LiKuUqK5kiPkLiz1QJ9K1cNXBAMoUCigNpQ9IqDtMI1HKA4/jyvUsaoSyZLA5kjOjDPFZen8Ql5TsvBskUgjciIPSX3QAXC86DT7VWvlEh/xZ+ij9BDVWJ0QL0SbZq6QaFxoLPcXPmBLveLCc4wXdDK6s+6/vwhCSniFLPXW0NJe5UB8zKCsviqpc7vGPVQFcyZbyPwGD+d5ZnxmNWlhG4xSBZZjivjIWHEQgoDkSMjMwTo54569JSE5IpA7EyJSMTyGTUAUFlO1ZKOtaHTMeL1PhYYFTcihmY2cQ5+ullj7EDkiVfVez2sCTz8yiv84djhg7IJVk81xFWJlPdfHBG0flkRC/zQFZ+DSllNtfDdUsOMCliyGX5uOzU3ZhIXFDof4m1gDuKbEx0t2YS25gVGpcMnr/I1kx3c6piB8P8ZoqEwfMX3ZyCXynJTmq/U7NUXqfUzCbWL1wqVKBQUeESzQYoUlW8TAcVL1RCxUu1G6BYXfFyfQ4VPbDI4T8d2WzgQ6sc/vmxnTsqfHCZQzUJxm1h5dxS5Tu6lQgTZ0ipqRVqSwzTbbLHMt+c19iO76tsx/cLZub+Ali+tYC93olEAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDE3LTA5LTA5VDIwOjE4OjE3KzAyOjAwjKtfjgAAACV0RVh0ZGF0ZTptb2RpZnkAMjAxNy0wOS0wOVQyMDoxODoxNyswMjowMP325zIAAAAZdEVYdFNvZnR3YXJlAHd3dy5pbmtzY2FwZS5vcmeb7jwaAAAAAElFTkSuQmCC") no-repeat 50% 50%;
     background-size: 85%;
 }
 
-.recTasks>.iziToast-body .iziToast-buttons {
+.recTasks>.iziToast-body .iziToast-buttons, 
+.recTasks2>.iziToast-body .iziToast-buttons {
     float: inline-end !important;
 }
 
-.recTasks>.iziToast-body .iziToast-inputs-child {
+.recTasks>.iziToast-body .iziToast-inputs-child, 
+.recTasks2>.iziToast-body .iziToast-inputs-child {
     display: block !important;
 }
 
