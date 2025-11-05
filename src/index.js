@@ -39,9 +39,194 @@ export default {
     };
     extensionAPI.settings.panel.create(config);
 
+    extensionAPI.ui.commandPalette.addCommand({
+      label: "Convert TODO to Recurring Task",
+      callback: () => convertTODO(null),
+    });
+    window.roamAlphaAPI.ui.blockContextMenu.addCommand({
+      label: "Convert TODO to Recurring Task",
+      callback: (e) => convertTODO(e),
+    });
+    extensionAPI.ui.commandPalette.addCommand({
+      label: "Create a Recurring TODO",
+      callback: () => createRecurringTODO(),
+    });
+
+    async function convertTODO(e) {
+      let fuid = null;
+      if (e && e["block-uid"]) {
+        fuid = e["block-uid"];
+      } else {
+        const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
+        fuid = focused && focused["block-uid"];
+        if (!fuid) {
+          alert("Place the cursor in the block you want to teleport first."); // TODO convert to izitoast
+          return;
+        }
+      }
+
+      const block = await getBlock(fuid);
+      if (!block) {
+        toast("Unable to read the current block.");
+        return;
+      }
+      const fstring = block.string || "";
+      const props = parseProps(block.props);
+      const inlineAttrs = parseAttrsFromBlockText(fstring);
+      const childAttrs = parseAttrsFromChildBlocks(block.children || []);
+
+      const promptResult = await promptForRepeatAndDue({
+        repeat: props.repeat || childAttrs.repeat?.value || inlineAttrs.repeat || "",
+        due: props.due || childAttrs.due?.value || inlineAttrs.due || "",
+      });
+      if (!promptResult) return;
+
+      const set = S();
+      const normalizedRepeat = normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat;
+      if (!normalizedRepeat) {
+        toast("Repeat rule is required.");
+        return;
+      }
+      if (!parseRuleText(normalizedRepeat)) {
+        toast("Unable to understand that repeat rule.");
+        return;
+      }
+
+      let dueDate = null;
+      let dueStr = null;
+      if (promptResult.due) {
+        dueDate =
+          promptResult.dueDate instanceof Date && !Number.isNaN(promptResult.dueDate.getTime())
+            ? new Date(promptResult.dueDate.getTime())
+            : parseRoamDate(promptResult.due);
+        if (!(dueDate instanceof Date) || Number.isNaN(dueDate.getTime())) {
+          toast("Couldn't parse that due date.");
+          return;
+        }
+        dueStr = formatDate(dueDate, set);
+      }
+
+      const baseWithoutAttrs = removeInlineAttributes(fstring, ["repeat", "due"]);
+      const todoString = normalizeToTodoMacro(baseWithoutAttrs);
+      if (todoString !== fstring) {
+        await updateBlockString(fuid, todoString);
+      }
+
+      const rtProps = { ...(props.rt || {}) };
+      if (!rtProps.id) rtProps.id = shortId();
+      if (!rtProps.tz) rtProps.tz = set.timezone;
+
+      const propsPatch = { repeat: normalizedRepeat, rt: rtProps };
+      if (dueStr) propsPatch.due = dueStr;
+      else propsPatch.due = undefined;
+
+      await updateBlockProps(fuid, propsPatch);
+
+      if (set.attributeSurface === "Child") {
+        await ensureChildAttr(fuid, "repeat", normalizedRepeat);
+        if (dueStr) await ensureChildAttr(fuid, "due", dueStr);
+        else await removeChildAttr(fuid, "due");
+      } else {
+        await removeChildAttr(fuid, "repeat");
+        await removeChildAttr(fuid, "due");
+      }
+
+      repeatOverrides.delete(fuid);
+      toast("Recurring TODO ready");
+      scheduleSurfaceSync(set.attributeSurface);
+    }
+
+    async function createRecurringTODO() {
+      const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
+      const fuid = focused && focused["block-uid"];
+      if (fuid == null || fuid == undefined) {
+        alert("Place the cursor in the block you want to teleport first."); // TODO convert to izitoast
+        return;
+      }
+
+      const block = await getBlock(fuid);
+      if (!block) {
+        toast("Unable to read the current block.");
+        return;
+      }
+
+      const props = parseProps(block.props);
+      const inlineAttrs = parseAttrsFromBlockText(block.string || "");
+      const childAttrs = parseAttrsFromChildBlocks(block.children || []);
+      const baseWithoutAttrs = removeInlineAttributes(block.string || "", ["repeat", "due"]);
+      const initialTaskText = normalizeToTodoMacro(baseWithoutAttrs).replace(/^{{\[\[TODO\]\]}}\s*/i, "");
+      const promptResult = await promptForRepeatAndDue({
+        includeTaskText: true,
+        taskText: initialTaskText,
+        repeat: props.repeat || childAttrs.repeat?.value || inlineAttrs.repeat || "",
+        due:
+          props.due ||
+          childAttrs.due?.value ||
+          inlineAttrs.due ||
+          "",
+      });
+      if (!promptResult) return;
+
+      const set = S();
+      const normalizedRepeat = normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat;
+      if (!normalizedRepeat) {
+        toast("Repeat rule is required.");
+        return;
+      }
+      if (!parseRuleText(normalizedRepeat)) {
+        toast("Unable to understand that repeat rule.");
+        return;
+      }
+
+      let dueDate = null;
+      let dueStr = null;
+      if (promptResult.due) {
+        dueDate =
+          promptResult.dueDate instanceof Date && !Number.isNaN(promptResult.dueDate.getTime())
+            ? new Date(promptResult.dueDate.getTime())
+            : parseRoamDate(promptResult.due);
+        if (!(dueDate instanceof Date) || Number.isNaN(dueDate.getTime())) {
+          toast("Couldn't parse that due date.");
+          return;
+        }
+        dueStr = formatDate(dueDate, set);
+      }
+
+      const taskTextInput =
+        typeof promptResult.taskText === "string" ? promptResult.taskText : initialTaskText;
+      const cleanedTaskText = removeInlineAttributes(taskTextInput, ["repeat", "due"]);
+      const todoString = normalizeToTodoMacro(cleanedTaskText);
+      if (todoString !== (block.string || "")) {
+        await updateBlockString(fuid, todoString);
+      }
+
+      const rtProps = { ...(props.rt || {}) };
+      if (!rtProps.id) rtProps.id = shortId();
+      if (!rtProps.tz) rtProps.tz = set.timezone;
+
+      const propsPatch = { repeat: normalizedRepeat, rt: rtProps };
+      if (dueStr) propsPatch.due = dueStr;
+      else propsPatch.due = undefined;
+
+      await updateBlockProps(fuid, propsPatch);
+
+      if (set.attributeSurface === "Child") {
+        await ensureChildAttr(fuid, "repeat", normalizedRepeat);
+        if (dueStr) await ensureChildAttr(fuid, "due", dueStr);
+        else await removeChildAttr(fuid, "due");
+      } else {
+        await removeChildAttr(fuid, "repeat");
+        await removeChildAttr(fuid, "due");
+      }
+
+      repeatOverrides.delete(fuid);
+      toast("Created your recurring TODO");
+      scheduleSurfaceSync(set.attributeSurface);
+    }
+
     function S() {
       const adv = (extensionAPI.settings.get("rt-advance-from") || "Due").toString().toLowerCase();
-      const attrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Child";
+      const attrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
       if (attrSurface !== lastAttrSurface) {
         lastAttrSurface = attrSurface;
         scheduleSurfaceSync(attrSurface);
@@ -304,16 +489,16 @@ export default {
           snapshotRepeat != null
             ? normalizeRepeatRuleText(snapshotRepeat) || snapshotRepeat
             : payload.previousInlineRepeat != null
-            ? normalizeRepeatRuleText(payload.previousInlineRepeat) || payload.previousInlineRepeat
-            : payload.previousChildRepeat != null
-            ? normalizeRepeatRuleText(payload.previousChildRepeat) || payload.previousChildRepeat
-            : undefined;
+              ? normalizeRepeatRuleText(payload.previousInlineRepeat) || payload.previousInlineRepeat
+              : payload.previousChildRepeat != null
+                ? normalizeRepeatRuleText(payload.previousChildRepeat) || payload.previousChildRepeat
+                : undefined;
         const restoreDueStr =
           payload.previousDueStr != null
             ? payload.previousDueStr
             : previousDueDate
-            ? formatDate(previousDueDate, set)
-            : undefined;
+              ? formatDate(previousDueDate, set)
+              : undefined;
         const restoreDueDate = restoreDueStr ? parseRoamDate(restoreDueStr) || previousDueDate : previousDueDate;
 
         const propsPatch = {};
@@ -442,7 +627,7 @@ export default {
     let lastAttrSurface = null;
     let pendingSurfaceSync = null;
 
-    lastAttrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Child";
+    lastAttrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
     void syncPillsForSurface(lastAttrSurface);
     initiateObserver();
     window.addEventListener("hashchange", handleHashChange);
@@ -743,7 +928,7 @@ export default {
       observer = new MutationObserver(callback);
       if (targetNode1) observer.observe(targetNode1, obsConfig);
       if (targetNode2) observer.observe(targetNode2, obsConfig);
-      const surface = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Child";
+      const surface = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
       lastAttrSurface = surface;
       void syncPillsForSurface(surface);
     }
@@ -1717,20 +1902,20 @@ export default {
         });
       });
     }
-/*
-    function ensureToastStyles() {
-      if (document.getElementById("rt-toast-style")) return;
-      const style = document.createElement("style");
-      style.id = "rt-toast-style";
-      style.textContent = `
-        .iziToast.recTasks .iziToast-body {
-          display: flex;
-          align-items: center;
+    /*
+        function ensureToastStyles() {
+          if (document.getElementById("rt-toast-style")) return;
+          const style = document.createElement("style");
+          style.id = "rt-toast-style";
+          style.textContent = `
+            .iziToast.recTasks .iziToast-body {
+              display: flex;
+              align-items: center;
+            }
+          `;
+          document.head.appendChild(style);
         }
-      `;
-      document.head.appendChild(style);
-    }
-    */
+        */
 
     function toast(msg) {
       // ensureToastStyles();
@@ -1812,11 +1997,131 @@ export default {
       });
     }
 
+    function promptForRepeatAndDue(initial = {}) {
+      const includeTaskText = !!initial.includeTaskText;
+      const snapshot = {
+        repeat: typeof initial.repeat === "string" && initial.repeat ? initial.repeat : initial.repeatRaw || "",
+        due:
+          typeof initial.due === "string" && initial.due
+            ? initial.due
+            : initial.dueText || initial.rawDue || "",
+        task:
+          includeTaskText && typeof initial.taskText === "string" && initial.taskText
+            ? initial.taskText
+            : includeTaskText && typeof initial.taskTextRaw === "string"
+              ? initial.taskTextRaw
+              : "",
+      };
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+        const taskInputHtml = `<input type="text" placeholder="Task text" value="${escapeHtml(
+          snapshot.task || ""
+        )}" />`;
+        const repeatInputHtml = `<input type="text" placeholder="Repeat rule (required)" value="${escapeHtml(
+          snapshot.repeat || ""
+        )}" />`;
+        const dueInputHtml = `<input type="text" placeholder="Optional due date (YYYY-MM-DD or [[Page]])" value="${escapeHtml(
+          snapshot.due || ""
+        )}" />`;
+        const promptMessage = includeTaskText
+          ? "Enter the task text, repeat rule, and optional due date."
+          : "Enter the repeat rule and, optionally, a due date.";
+        const inputs = [];
+        const indexes = {};
+        if (includeTaskText) {
+          indexes.task = inputs.length;
+          inputs.push([
+            taskInputHtml,
+            "keyup",
+            function (_instance, _toast, input) {
+              snapshot.task = input.value;
+            },
+            true,
+          ]);
+        }
+        indexes.repeat = inputs.length;
+        const repeatConfig = [
+          repeatInputHtml,
+          "keyup",
+          function (_instance, _toast, input) {
+            snapshot.repeat = input.value;
+          },
+        ];
+        if (!includeTaskText) repeatConfig.push(true);
+        inputs.push(repeatConfig);
+        indexes.due = inputs.length;
+        inputs.push([
+          dueInputHtml,
+          "keyup",
+          function (_instance, _toast, input) {
+            snapshot.due = input.value;
+          },
+        ]);
+        iziToast.question({
+          theme: "light",
+          color: "black",
+          layout: 2,
+          class: "recTasks2",
+          position: "center",
+          drag: false,
+          timeout: false,
+          close: true,
+          overlay: true,
+          title: "Recurring Task",
+          message: promptMessage,
+          inputs,
+          buttons: [
+            [
+              "<button>Save</button>",
+              (instance, toastEl, _button, _event, inputs) => {
+                const repeatValue = inputs?.[indexes.repeat]?.value?.trim();
+                if (!repeatValue) {
+                  toast("Repeat rule is required.");
+                  inputs?.[indexes.repeat]?.focus?.();
+                  return;
+                }
+                const dueValue = inputs?.[indexes.due]?.value?.trim() || "";
+                const taskValue =
+                  includeTaskText && indexes.task != null
+                    ? (inputs?.[indexes.task]?.value || "").trim()
+                    : undefined;
+                const normalizedRepeat = normalizeRepeatRuleText(repeatValue) || repeatValue;
+                const dueText = dueValue || null;
+                const dueDate = dueText ? parseRoamDate(dueText) : null;
+                instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+                finish({
+                  repeat: normalizedRepeat,
+                  repeatRaw: repeatValue,
+                  due: dueText,
+                  dueDate,
+                  taskText: includeTaskText ? taskValue : undefined,
+                });
+              },
+              true,
+            ],
+            [
+              "<button>Cancel</button>",
+              (instance, toastEl) => {
+                instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+                finish(null);
+              },
+            ],
+          ],
+          onClosed: () => finish(null),
+        });
+      });
+    }
+
     function handleAttributeSurfaceChange(evtOrValue) {
       let next =
         typeof evtOrValue === "string"
           ? evtOrValue
-          : evtOrValue?.target?.value || extensionAPI.settings.get("rt-attribute-surface") || "Child";
+          : evtOrValue?.target?.value || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
       if (next === lastAttrSurface) {
         if (next === "Hidden") void syncPillsForSurface(next);
         return;
@@ -1827,6 +2132,7 @@ export default {
         pendingSurfaceSync = null;
       }
       void syncPillsForSurface(next);
+      lastAttrSurface = next;
     }
 
     function scheduleSurfaceSync(surface) {
@@ -2930,6 +3236,8 @@ export default {
       } finally {
         delete window.__RecurringTasksCleanup;
       }
-    }
+    };
+
+    window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Convert TODO to Recurring Task" });
   },
 };
