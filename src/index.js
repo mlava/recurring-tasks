@@ -260,6 +260,7 @@ export default {
 
     const processedMap = new Map();
     const repeatOverrides = new Map();
+    const deletingChildAttrs = new Set();
 
     function normalizeOverrideEntry(entry) {
       if (!entry) return null;
@@ -996,7 +997,7 @@ export default {
     }
 
     async function deleteBlock(uid) {
-      return window.roamAlphaAPI.deleteBlock({ block: { uid } });
+      return window.roamAlphaAPI.deleteBlock({ block: { "uid": uid.toString() } });
     }
 
     async function createBlock(parentUid, order, string, uid) {
@@ -1238,14 +1239,36 @@ export default {
         return { created: true, uid: newUid, previousValue: null };
       }
       const matchBlock = match[0];
+      const matchUid = matchBlock?.uid;
+      if (!matchUid) {
+        const newUid = window.roamAlphaAPI.util.generateUID();
+        await createBlock(uid, 0, `${key}:: ${value}`, newUid);
+        return { created: true, uid: newUid, previousValue: null };
+      }
+      const existing = await getBlock(matchUid);
+      if (!existing) {
+        const newUid = window.roamAlphaAPI.util.generateUID();
+        await createBlock(uid, 0, `${key}:: ${value}`, newUid);
+        return { created: true, uid: newUid, previousValue: null };
+      }
       const curVal = matchBlock?.string?.replace(/^[^:]+::\s*/i, "")?.trim() || "";
       if (curVal !== value) {
-        await window.roamAlphaAPI.updateBlock({ block: { uid: matchBlock.uid, string: `${key}:: ${value}` } });
+        try {
+          await window.roamAlphaAPI.updateBlock({ block: { uid: matchUid, string: `${key}:: ${value}` } });
+        } catch (err) {
+          console.warn("[RecurringTasks] ensureChildAttr update failed, recreating", err);
+          const newUid = window.roamAlphaAPI.util.generateUID();
+          await createBlock(uid, 0, `${key}:: ${value}`, newUid);
+          return { created: true, uid: newUid, previousValue: curVal };
+        }
       }
-      return { created: false, uid: matchBlock.uid, previousValue: curVal };
+      return { created: false, uid: matchUid, previousValue: curVal };
     }
 
     async function removeChildAttr(uid, key) {
+      const token = `${uid}::${key}`;
+      if (deletingChildAttrs.has(token)) return;
+      deletingChildAttrs.add(token);
       const current = await window.roamAlphaAPI.q(`
         [:find (pull ?c [:block/uid :block/string])
          :where [?p :block/uid "${uid}"] [?c :block/parents ?p]]`);
@@ -1253,12 +1276,24 @@ export default {
         new RegExp(`^\\s*${key}::\\s*`, "i").test((r[0]?.string || "").trim())
       );
       if (match) {
+        const entry = match[0];
+        const targetUid = typeof entry?.uid === "string" ? entry.uid.trim() : "";
+        if (!targetUid) {
+          deletingChildAttrs.delete(token);
+          return;
+        }
+        const exists = await getBlock(targetUid);
+        if (!exists) {
+          deletingChildAttrs.delete(token);
+          return;
+        }
         try {
-          await deleteBlock(match[0].uid);
+          await deleteBlock(targetUid);
         } catch (err) {
           console.warn("[RecurringTasks] removeChildAttr failed", err);
         }
       }
+      deletingChildAttrs.delete(token);
     }
 
     async function markCompleted(block, meta, set) {
@@ -2375,6 +2410,14 @@ export default {
               schedule(100);      // after first paint
               // schedule(200);  // later retry if lagging
             }
+            const childAttrMap = meta.childAttrMap || {};
+            for (const key of ["repeat", "due"]) {
+              if (childAttrMap[key]?.uid) {
+                await removeChildAttr(uid, key);
+                delete childAttrMap[key];
+              }
+            }
+            meta.childAttrMap = childAttrMap;
           }
 
           const humanRepeat = meta.repeat || inlineAttrs.repeat || "";
@@ -3006,7 +3049,11 @@ export default {
           const info = childMap[key];
           if (info?.uid) {
             try {
-              await deleteBlock(info.uid);
+              const targetUid = info.uid.trim();
+              if (!targetUid) continue;
+              const exists = await getBlock(targetUid);
+              if (!exists) continue;
+              await deleteBlock(targetUid);
             } catch (err) {
               console.warn("[RecurringTasks] failed to remove child attr", err);
             }
