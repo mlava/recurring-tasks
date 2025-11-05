@@ -262,6 +262,7 @@ export default {
     const repeatOverrides = new Map();
     const deletingChildAttrs = new Set();
     let childAttrMigrationRunning = false;
+    let migratingChildToHidden = false;
 
     function normalizeOverrideEntry(entry) {
       if (!entry) return null;
@@ -1235,15 +1236,25 @@ export default {
       const children = Array.isArray(parent.children) ? parent.children : [];
       const keyRegex = new RegExp(`^\\s*${key}::\\s*`, "i");
       const match = children.find((child) => keyRegex.test((child?.string || "").trim()));
-      if (!match || !match.uid) {
+      const matchUid = typeof match?.uid === "string" ? match.uid.trim() : "";
+      if (!matchUid) {
         const newUid = window.roamAlphaAPI.util.generateUID();
         await createBlock(uid, 0, `${key}:: ${value}`, newUid);
         return { created: true, uid: newUid, previousValue: null };
       }
-      const curVal = match.string?.replace(/^[^:]+::\s*/i, "")?.trim() || "";
+      const existingChild = await getBlock(matchUid);
+      if (!existingChild) {
+        const newUid = window.roamAlphaAPI.util.generateUID();
+        await createBlock(uid, 0, `${key}:: ${value}`, newUid);
+        return { created: true, uid: newUid, previousValue: null };
+      }
+      const curVal =
+        existingChild.string?.replace(/^[^:]+::\s*/i, "")?.trim() ||
+        match.string?.replace(/^[^:]+::\s*/i, "")?.trim() ||
+        "";
       if (curVal !== value) {
         try {
-          await window.roamAlphaAPI.updateBlock({ block: { uid: match.uid, string: `${key}:: ${value}` } });
+          await window.roamAlphaAPI.updateBlock({ block: { uid: matchUid, string: `${key}:: ${value}` } });
         } catch (err) {
           console.warn("[RecurringTasks] ensureChildAttr update failed, recreating", err);
           const newUid = window.roamAlphaAPI.util.generateUID();
@@ -1251,7 +1262,7 @@ export default {
           return { created: true, uid: newUid, previousValue: curVal };
         }
       }
-      return { created: false, uid: match.uid, previousValue: curVal };
+      return { created: false, uid: matchUid, previousValue: curVal };
     }
 
     async function removeChildAttr(uid, key) {
@@ -1260,6 +1271,7 @@ export default {
       deletingChildAttrs.add(token);
       try {
         const block = await getBlock(uid);
+        if (!block) return;
         const children = Array.isArray(block?.children) ? block.children : [];
         const matches = children.filter((entry) =>
           new RegExp(`^\\s*${key}::\\s*`, "i").test((entry?.string || "").trim())
@@ -1269,6 +1281,8 @@ export default {
           const targetUid = typeof entry?.uid === "string" ? entry.uid.trim() : "";
           if (!targetUid) continue;
           try {
+            const exists = await getBlock(targetUid);
+            if (!exists) continue;
             await deleteBlock(targetUid);
           } catch (err) {
             console.warn("[RecurringTasks] removeChildAttr failed", err);
@@ -2207,6 +2221,7 @@ export default {
     }
 
     function handleAttributeSurfaceChange(evtOrValue) {
+      const prev = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
       let next =
         typeof evtOrValue === "string"
           ? evtOrValue
@@ -2214,6 +2229,9 @@ export default {
       if (next === lastAttrSurface) {
         if (next === "Hidden") void syncPillsForSurface(next);
         return;
+      }
+      if (prev === "Child" && next === "Hidden") {
+        migratingChildToHidden = true;
       }
       lastAttrSurface = next;
       if (pendingSurfaceSync) {
@@ -2224,7 +2242,6 @@ export default {
       if (next === "Child") {
         void populateChildAttrsFromProps();
       }
-      lastAttrSurface = next;
     }
 
     function scheduleSurfaceSync(surface) {
@@ -2313,6 +2330,7 @@ export default {
             console.warn("[RecurringTasks] pill decoration failed", err);
           }
         }
+        migratingChildToHidden = false;
       } else {
         clearAllPills();
         if (surface === "Child") {
@@ -2448,6 +2466,10 @@ export default {
           const inlineAttrs = parseAttrsFromBlockText(block.string || "");
 
           if (set.attributeSurface === "Hidden") {
+          const childRepeatVal = meta.childAttrMap?.repeat?.value || null;
+          const childDueVal = meta.childAttrMap?.due?.value || null;
+          const cameFromChildSurface = migratingChildToHidden && !!childRepeatVal;
+          const inlineDueVal = inlineAttrs.due || null;
           const repeatSource =
             (typeof meta.repeat === "string" && meta.repeat) ||
             (typeof meta?.props?.repeat === "string" && meta.props.repeat) ||
@@ -2464,6 +2486,10 @@ export default {
           } else if (typeof meta.childAttrMap?.due?.value === "string" && meta.childAttrMap.due.value) {
             dueSource = meta.childAttrMap.due.value;
           }
+          if (cameFromChildSurface && !childDueVal && !inlineDueVal) {
+            dueSource = null;
+            meta.due = null;
+          }
           await updateBlockProps(uid, {
             repeat: repeatSource || undefined,
             due: dueSource || undefined,
@@ -2472,6 +2498,9 @@ export default {
           if (dueSource) {
             const parsed = parseRoamDate(dueSource);
             meta.due = parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : meta.due;
+          } else if (cameFromChildSurface) {
+            repeatOverrides.delete(uid);
+            meta.due = null;
           }
           const cleaned = removeInlineAttributes(block.string || "", ["repeat", "due"]);
           if (cleaned !== block.string) {
@@ -2482,6 +2511,8 @@ export default {
             // schedule(200);  // later retry if lagging
           }
           await removeChildAttr(uid, "repeat");
+          // Wait a beat so Roam registers the removal before due updates fire
+          await delay(30);
           await removeChildAttr(uid, "due");
           const childAttrMap = { ...(meta.childAttrMap || {}) };
           delete childAttrMap.repeat;
@@ -3367,6 +3398,9 @@ export default {
       const set = S();
       const parent = await getBlock(parentUid);
       if (!parent) return;
+      if (deletingChildAttrs.has(`${parentUid}::${key}`)) {
+        return;
+      }
 
       // read current child values
       const childMap = parseAttrsFromChildBlocks(parent.children || []);
@@ -3394,10 +3428,14 @@ export default {
         const normalized = normalizeRepeatRuleText(rawValue) || rawValue;
         const props = parseProps(parent.props);
         if (props.repeat !== normalized) {
-          await updateBlockProps(parentUid, { repeat: normalized });
-          if (info?.uid) {
-            await updateBlockString(info.uid, `repeat:: ${normalized}`);
-          } else {
+          try {
+            await updateBlockProps(parentUid, { repeat: normalized });
+          } catch (err) {
+            console.warn("[RecurringTasks] syncChildAttrToParent repeat update failed", err);
+            return;
+          }
+          const existingChildUid = typeof info?.uid === "string" ? info.uid.trim() : "";
+          if (!existingChildUid) {
             await ensureChildAttr(parentUid, "repeat", normalized);
           }
           await ensureInlineAttribute(parent, "repeat", normalized);
@@ -3406,10 +3444,14 @@ export default {
       } else if (key === "due") {
         const props = parseProps(parent.props);
         if (props.due !== rawValue) {
-          await updateBlockProps(parentUid, { due: rawValue });
-          if (info?.uid) {
-            await updateBlockString(info.uid, `due:: ${rawValue}`);
-          } else {
+          try {
+            await updateBlockProps(parentUid, { due: rawValue });
+          } catch (err) {
+            console.warn("[RecurringTasks] syncChildAttrToParent due update failed", err);
+            return;
+          }
+          const existingChildUid = typeof info?.uid === "string" ? info.uid.trim() : "";
+          if (!existingChildUid) {
             await ensureChildAttr(parentUid, "due", rawValue);
           }
           await ensureInlineAttribute(parent, "due", rawValue);
