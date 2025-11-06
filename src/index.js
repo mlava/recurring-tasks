@@ -226,7 +226,7 @@ export default {
 
     function S() {
       const adv = (extensionAPI.settings.get("rt-advance-from") || "Due").toString().toLowerCase();
-      const attrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
+      const attrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Child";
       if (attrSurface !== lastAttrSurface) {
         lastAttrSurface = attrSurface;
         scheduleSurfaceSync(attrSurface);
@@ -630,7 +630,7 @@ export default {
     let lastAttrSurface = null;
     let pendingSurfaceSync = null;
 
-    lastAttrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
+    lastAttrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Child";
     void syncPillsForSurface(lastAttrSurface);
     initiateObserver();
     window.addEventListener("hashchange", handleHashChange);
@@ -931,7 +931,7 @@ export default {
       observer = new MutationObserver(callback);
       if (targetNode1) observer.observe(targetNode1, obsConfig);
       if (targetNode2) observer.observe(targetNode2, obsConfig);
-      const surface = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
+      const surface = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Child";
       lastAttrSurface = surface;
       void syncPillsForSurface(surface);
     }
@@ -2221,11 +2221,11 @@ export default {
     }
 
     function handleAttributeSurfaceChange(evtOrValue) {
-      const prev = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
+      const prev = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Child";
       let next =
         typeof evtOrValue === "string"
           ? evtOrValue
-          : evtOrValue?.target?.value || extensionAPI.settings.get("rt-attribute-surface") || "Hidden";
+          : evtOrValue?.target?.value || extensionAPI.settings.get("rt-attribute-surface") || "Child";
       if (next === lastAttrSurface) {
         if (next === "Hidden") void syncPillsForSurface(next);
         return;
