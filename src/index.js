@@ -79,6 +79,19 @@ export default {
       label: "Convert TODO to Recurring Task",
       callback: (e) => convertTODO(e),
     });
+
+    // Placeholder for future feature - deconvert recurring tasks TODOs
+    /* 
+    extensionAPI.ui.commandPalette.addCommand({
+      label: "Convert Recurring Task to plain TODO",
+      callback: () => disableRecTODO(null),
+    });
+    window.roamAlphaAPI.ui.blockContextMenu.addCommand({
+      label: "Convert Recurring Task to plain TODO",
+      callback: (e) => disableRecTODO(e),
+    });
+    */
+    
     extensionAPI.ui.commandPalette.addCommand({
       label: "Create a Recurring TODO",
       callback: () => createRecurringTODO(),
@@ -2372,6 +2385,24 @@ export default {
           ],
           buttons: [
             [
+              "<button>Today</button>",
+              (instance, toastInstance) => {
+                const today = todayLocal();
+                const formatted = formatDate(today, S());
+                instance.hide({ transitionOut: "fadeOut" }, toastInstance, "button");
+                finish(formatted);
+              },
+            ],
+            [
+              "<button>Tomorrow</button>",
+              (instance, toastInstance) => {
+                const tomorrow = addDaysLocal(todayLocal(), 1);
+                const formatted = formatDate(tomorrow, S());
+                instance.hide({ transitionOut: "fadeOut" }, toastInstance, "button");
+                finish(formatted);
+              },
+            ],
+            [
               "<button>Save</button>",
               (instance, toastInstance, _button, _e, inputs) => {
                 const val = inputs?.[0]?.value?.trim();
@@ -2443,6 +2474,35 @@ export default {
               },
             ],
           ],
+          onOpening: (_instance, toastEl) => {
+            const input = toastEl.querySelector(`.${dateInputClass}`);
+            if (!input) return;
+            let row = input.parentElement;
+            if (!row || !row.classList.contains("rt-date-inline-wrap")) {
+              row = document.createElement("div");
+              row.className = "rt-date-inline-wrap";
+              input.parentNode?.insertBefore(row, input);
+              row.appendChild(input);
+            }
+            const shortcutWrap = document.createElement("div");
+            shortcutWrap.className = "rt-date-shortcuts-inline";
+            const makeBtn = (label, offsetDays) => {
+              const btn = document.createElement("button");
+              btn.type = "button";
+              btn.textContent = label;
+              btn.addEventListener("click", () => {
+                const date = addDaysLocal(todayLocal(), offsetDays);
+                const iso = formatIsoDate(date, setSnapshot);
+                input.value = iso;
+                snapshot.dueIso = iso;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              });
+              return btn;
+            };
+            shortcutWrap.appendChild(makeBtn("Today", 0));
+            shortcutWrap.appendChild(makeBtn("Tomorrow", 1));
+            row.appendChild(shortcutWrap);
+          },
           onClosed: () => finish(null),
         });
       });
@@ -2485,7 +2545,8 @@ export default {
         const repeatInputHtml = `<input type="text" placeholder="Repeat rule (required)" value="${escapeHtml(
           snapshot.repeat || ""
         )}" />`;
-        const dueInputHtml = `<input type="date" value="${escapeHtml(snapshot.dueIso || "")}" />`;
+        const dateInputClass = `rt-date-input-${Date.now()}`;
+        const dueInputHtml = `<input type="date" class="${dateInputClass}" value="${escapeHtml(snapshot.dueIso || "")}" />`;
         const promptMessage = includeTaskText
           ? "Enter the task text, repeat rule, and optional due date."
           : "Enter the repeat rule and, optionally, pick a due date.";
@@ -2517,7 +2578,9 @@ export default {
           dueInputHtml,
           "input",
           function (_instance, _toast, input) {
-            snapshot.dueIso = input.value;
+            if (input?.type === "date") {
+              snapshot.dueIso = input.value;
+            }
           },
         ]);
         iziToast.question({
@@ -2910,69 +2973,69 @@ export default {
           const inlineRepeatVal = pickInlineAttr(inlineAttrs, attrNames.repeatAliases);
           const inlineDueVal = pickInlineAttr(inlineAttrs, attrNames.dueAliases);
           if (set.attributeSurface === "Hidden") {
-          const childRepeatEntry = getMetaChildAttr(meta, "repeat", attrNames, {
-            allowFallback: !migratingChildToHidden && attrNames.repeatAttr === DEFAULT_REPEAT_ATTR,
-          });
-          const childDueEntry = getMetaChildAttr(meta, "due", attrNames, {
-            allowFallback: !migratingChildToHidden && attrNames.dueAttr === DEFAULT_DUE_ATTR,
-          });
-          const childRepeatVal = childRepeatEntry?.value || null;
-          const childDueVal = childDueEntry?.value || null;
-          const cameFromChildSurface = migratingChildToHidden && hasStoredRepeatChild;
-          const allowPropRepeatSource = !migratingChildToHidden && propsRepeatMatchesCurrent;
-          const allowPropDueSource = !migratingChildToHidden && propsDueMatchesCurrent;
-          const repeatSource =
-            childRepeatVal ||
-            (typeof meta.repeat === "string" && meta.repeat) ||
-            inlineRepeatVal ||
-            (allowPropRepeatSource && typeof meta?.props?.repeat === "string" && meta.props.repeat) ||
-            null;
-          let dueSource = null;
-          if (childDueVal) {
-            dueSource = childDueVal;
-          } else if (inlineDueVal) {
-            dueSource = inlineDueVal;
-          } else if (allowPropDueSource && typeof meta?.props?.due === "string" && meta.props.due) {
-            dueSource = meta.props.due;
-          } else if (allowPropDueSource && meta.due instanceof Date && !Number.isNaN(meta.due.getTime())) {
-            dueSource = formatDate(meta.due, set);
+            const childRepeatEntry = getMetaChildAttr(meta, "repeat", attrNames, {
+              allowFallback: !migratingChildToHidden && attrNames.repeatAttr === DEFAULT_REPEAT_ATTR,
+            });
+            const childDueEntry = getMetaChildAttr(meta, "due", attrNames, {
+              allowFallback: !migratingChildToHidden && attrNames.dueAttr === DEFAULT_DUE_ATTR,
+            });
+            const childRepeatVal = childRepeatEntry?.value || null;
+            const childDueVal = childDueEntry?.value || null;
+            const cameFromChildSurface = migratingChildToHidden && hasStoredRepeatChild;
+            const allowPropRepeatSource = !migratingChildToHidden && propsRepeatMatchesCurrent;
+            const allowPropDueSource = !migratingChildToHidden && propsDueMatchesCurrent;
+            const repeatSource =
+              childRepeatVal ||
+              (typeof meta.repeat === "string" && meta.repeat) ||
+              inlineRepeatVal ||
+              (allowPropRepeatSource && typeof meta?.props?.repeat === "string" && meta.props.repeat) ||
+              null;
+            let dueSource = null;
+            if (childDueVal) {
+              dueSource = childDueVal;
+            } else if (inlineDueVal) {
+              dueSource = inlineDueVal;
+            } else if (allowPropDueSource && typeof meta?.props?.due === "string" && meta.props.due) {
+              dueSource = meta.props.due;
+            } else if (allowPropDueSource && meta.due instanceof Date && !Number.isNaN(meta.due.getTime())) {
+              dueSource = formatDate(meta.due, set);
+            }
+            if (cameFromChildSurface && !childDueVal && !inlineDueVal) {
+              dueSource = null;
+              meta.due = null;
+            }
+            await updateBlockProps(uid, {
+              repeat: repeatSource || undefined,
+              due: dueSource || undefined,
+            });
+            if (repeatSource) meta.repeat = repeatSource;
+            if (dueSource) {
+              const parsed = parseRoamDate(dueSource);
+              meta.due = parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : meta.due;
+            } else if (cameFromChildSurface) {
+              repeatOverrides.delete(uid);
+              meta.due = null;
+            }
+            const inlineRemovalKeys = [
+              ...new Set([...attrNames.repeatRemovalKeys, ...attrNames.dueRemovalKeys]),
+            ];
+            const cleaned = removeInlineAttributes(block.string || "", inlineRemovalKeys);
+            if (cleaned !== block.string) {
+              await updateBlockString(uid, cleaned);
+              block.string = cleaned;
+              schedule(0);       // next tick
+              schedule(100);      // after first paint
+              // schedule(200);  // later retry if lagging
+            }
+            await removeChildAttrsForType(uid, "repeat", attrNames);
+            // Wait a beat so Roam registers the removal before due updates fire
+            await delay(30);
+            await removeChildAttrsForType(uid, "due", attrNames);
+            const childAttrMap = { ...(meta.childAttrMap || {}) };
+            for (const key of getAttrAliases("repeat", attrNames)) delete childAttrMap[key];
+            for (const key of getAttrAliases("due", attrNames)) delete childAttrMap[key];
+            meta.childAttrMap = childAttrMap;
           }
-          if (cameFromChildSurface && !childDueVal && !inlineDueVal) {
-            dueSource = null;
-            meta.due = null;
-          }
-          await updateBlockProps(uid, {
-            repeat: repeatSource || undefined,
-            due: dueSource || undefined,
-          });
-          if (repeatSource) meta.repeat = repeatSource;
-          if (dueSource) {
-            const parsed = parseRoamDate(dueSource);
-            meta.due = parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : meta.due;
-          } else if (cameFromChildSurface) {
-            repeatOverrides.delete(uid);
-            meta.due = null;
-          }
-          const inlineRemovalKeys = [
-            ...new Set([...attrNames.repeatRemovalKeys, ...attrNames.dueRemovalKeys]),
-          ];
-          const cleaned = removeInlineAttributes(block.string || "", inlineRemovalKeys);
-          if (cleaned !== block.string) {
-            await updateBlockString(uid, cleaned);
-            block.string = cleaned;
-            schedule(0);       // next tick
-            schedule(100);      // after first paint
-            // schedule(200);  // later retry if lagging
-          }
-          await removeChildAttrsForType(uid, "repeat", attrNames);
-          // Wait a beat so Roam registers the removal before due updates fire
-          await delay(30);
-          await removeChildAttrsForType(uid, "due", attrNames);
-          const childAttrMap = { ...(meta.childAttrMap || {}) };
-          for (const key of getAttrAliases("repeat", attrNames)) delete childAttrMap[key];
-          for (const key of getAttrAliases("due", attrNames)) delete childAttrMap[key];
-          meta.childAttrMap = childAttrMap;
-        }
 
           const humanRepeat = meta.repeat || inlineRepeatVal || "";
           const dueDate = meta.due || null;
@@ -3998,6 +4061,7 @@ export default {
       }
 
       window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Convert TODO to Recurring Task" });
+      // window.roamAlphaAPI.ui.blockContextMenu.removeCommand({label: "Convert Recurring Task to plain TODO",});
       latestHelpers = null;
     }
   },
