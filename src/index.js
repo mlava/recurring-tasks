@@ -91,7 +91,7 @@ export default {
       callback: (e) => disableRecTODO(e),
     });
     */
-    
+
     extensionAPI.ui.commandPalette.addCommand({
       label: "Create a Recurring TODO",
       callback: () => createRecurringTODO(),
@@ -1900,133 +1900,229 @@ export default {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     }
 
-    // ========================= Rule parsing + next date =========================
-    const DOW_MAP = {
-      sunday: "SU",
-      monday: "MO",
-      tuesday: "TU",
-      wednesday: "WE",
-      thursday: "TH",
-      friday: "FR",
-      saturday: "SA",
-    };
-    const DOW_IDX = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
-
-    // NEW: helpers for ordinal + weekday aliasing
-    const ORD_MAP = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "last": -1 };
-    const DOW_ALIASES = {
-      su: "sunday", sun: "sunday", sunday: "sunday",
-      mo: "monday", mon: "monday", monday: "monday",
-      tu: "tuesday", tue: "tuesday", tues: "tuesday", tuesday: "tuesday",
-      we: "wednesday", wed: "wednesday", wednesday: "wednesday",
-      th: "thursday", thu: "thursday", thur: "thursday", thurs: "thursday", thursday: "thursday",
-      fr: "friday", fri: "friday", friday: "friday",
-      sa: "saturday", sat: "saturday", saturday: "saturday",
+    // === Small helpers (no overlap with your existing ones) ===
+    const DOW_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+    const MONTH_MAP = {
+      january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+      july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
     };
 
-    function ordFromText(s) {
-      const n = Number(s);
-      if (!Number.isNaN(n) && n >= 1 && n <= 31) return n;
-      const key = s.toLowerCase();
-      if (ORD_MAP[key] != null) return ORD_MAP[key];
+    function monthFromText(x) {
+      if (!x) return null;
+      const m = MONTH_MAP[x.toLowerCase()];
+      return m || null;
+    }
+    function expandDowRange(startISO, endISO) {
+      const s = DOW_ORDER.indexOf(startISO), e = DOW_ORDER.indexOf(endISO);
+      if (s === -1 || e === -1) return [];
+      if (s <= e) return DOW_ORDER.slice(s, e + 1);
+      return [...DOW_ORDER.slice(s), ...DOW_ORDER.slice(0, e + 1)]; // wrap
+    }
+    function splitList(str) {
+      return str
+        .replace(/&/g, ",")
+        .replace(/\band\b/gi, ",")
+        .split(/[,\s/]+/)
+        .filter(Boolean);
+    }
+    // Recognize MWF / TTh sets
+    function parseAbbrevSet(token) {
+      const t = token.toLowerCase();
+      if (t === "mwf") return ["MO", "WE", "FR"];
+      if (t === "tth" || t === "tu/th" || t === "t/th") return ["TU", "TH"];
       return null;
     }
-    function dowFromAlias(s) {
-      const norm = (DOW_ALIASES[s.toLowerCase()] || s).toLowerCase();
-      return DOW_MAP[norm] || null;
+    // Turn mixed text, ranges, and shorthands into ISO DOW array
+    function normalizeByDayList(raw) {
+      const tokens = splitList(raw.replace(/[-–—]/g, "-"));
+      let out = [];
+      for (const tok of tokens) {
+        if (tok.includes("-")) {
+          const [a, b] = tok.split("-");
+          const A = dowFromAlias(a), B = dowFromAlias(b);
+          if (A && B) { out.push(...expandDowRange(A, B)); continue; }
+        }
+        const set = parseAbbrevSet(tok);
+        if (set) { out.push(...set); continue; }
+        const d = dowFromAlias(tok);
+        if (d) { out.push(d); continue; }
+      }
+      const seen = new Set();
+      return out.filter(d => (seen.has(d) ? false : (seen.add(d), true)));
     }
 
+    // === Merged + extended parser ===
     function parseRuleText(s) {
       if (!s) return null;
       const t = s.trim().replace(/\s+/g, " ").toLowerCase();
-      if (t === "daily") return { kind: "DAILY", interval: 1 };
-      if (t === "every day") return { kind: "DAILY", interval: 1 };
-      if (t === "every other day"
-        || t === "every second day"
-        || t === "every two days"
-        || t === "second daily") return { kind: "DAILY", interval: 2 };
+
+      // 0) Simple daily & weekday/weekend anchors
+      if (t === "daily" || t === "every day") return { kind: "DAILY", interval: 1 };
+      if (
+        t === "every other day" || t === "every second day" ||
+        t === "every two days" || t === "second daily"
+      ) return { kind: "DAILY", interval: 2 };
       if (t === "every third day" || t === "every three days") return { kind: "DAILY", interval: 3 };
       if (t === "every fourth day" || t === "every four days") return { kind: "DAILY", interval: 4 };
       if (t === "every fifth day" || t === "every five days") return { kind: "DAILY", interval: 5 };
-      if (t === "every weekday") return { kind: "WEEKDAY" };
+
+      if (t === "every weekday" || t === "weekdays" || t === "on weekdays" || t === "business days" || t === "workdays")
+        return { kind: "WEEKDAY" };
+      if (t === "every weekend" || t === "weekend" || t === "weekends")
+        return { kind: "WEEKLY", interval: 1, byDay: ["SA", "SU"] };
+
+      // 1) "every <dow>" (singular/plural) — use your DOW_MAP and aliases
+      const singleDow = Object.keys(DOW_ALIASES).find(
+        a => t === `every ${a}` || t === `every ${a}s`
+      );
+      if (singleDow) return { kind: "WEEKLY", interval: 1, byDay: [dowFromAlias(singleDow)] };
+
+      // 2) "every N days"
       let m = t.match(/^every (\d+)\s*days?$/);
       if (m) return { kind: "DAILY", interval: parseInt(m[1], 10) };
 
-      const singleDow = Object.entries(DOW_MAP).find(
-        ([name]) => t === `every ${name}` || t === `every ${name}s`
-      );
-      if (singleDow) return { kind: "WEEKLY", interval: 1, byDay: [singleDow[1]] };
+      // 3) "every N weekdays/business days"
+      m = t.match(/^every (\d+)\s*(?:weekdays?|business days?)$/);
+      if (m) return { kind: "BUSINESS_DAILY", interval: parseInt(m[1], 10) };
 
-      if (t.startsWith("every ")) {
-        const dowCandidate = t.slice("every ".length).replace(/\s+/g, " ").trim();
-        const direct = DOW_MAP[dowCandidate];
-        if (direct) return { kind: "WEEKLY", interval: 1, byDay: [direct] };
-        if (dowCandidate.endsWith("s")) {
-          const singular = dowCandidate.slice(0, -1);
-          const code = DOW_MAP[singular];
-          if (code) return { kind: "WEEKLY", interval: 1, byDay: [code] };
-        }
-      }
+      // 4) Weekly base words + biweekly/fortnightly
+      if (t === "weekly" || t === "every week") return { kind: "WEEKLY", interval: 1, byDay: null };
+      if (t === "every other week" || t === "every second week" || t === "biweekly" || t === "fortnightly" || t === "every fortnight")
+        return { kind: "WEEKLY", interval: 2, byDay: null };
 
-      if (t === "weekly") return { kind: "WEEKLY", interval: 1, byDay: null };
-      if (t === "every week") return { kind: "WEEKLY", interval: 1, byDay: null };
-      if (t === "every other week" || t === "every second week") return { kind: "WEEKLY", interval: 2, byDay: null };
-
+      // 5) Weekly with "on …"
       let weeklyOn = t.match(/^(?:every week|weekly)\s+on\s+(.+)$/);
       if (weeklyOn) {
-        const byDay = weeklyOn[1]
-          .split(/[, ]+/)
-          .map((x) => DOW_MAP[x.toLowerCase()] || null)
-          .filter(Boolean);
+        const byDay = normalizeByDayList(weeklyOn[1]);
         return { kind: "WEEKLY", interval: 1, byDay: byDay.length ? byDay : null };
       }
+      // 5b) "every N weeks (on …)?"
       m = t.match(/^every (\d+)\s*weeks?(?:\s*on\s*(.+))?$/);
       if (m) {
-        const byDay = m[2]
-          ? m[2].split(/[, ]+/).map((x) => DOW_MAP[x.toLowerCase()] || null).filter(Boolean)
-          : null;
-        return { kind: "WEEKLY", interval: parseInt(m[1], 10), byDay };
+        const interval = parseInt(m[1], 10);
+        const byDay = m[2] ? normalizeByDayList(m[2]) : null;
+        return { kind: "WEEKLY", interval, byDay: (byDay && byDay.length) ? byDay : null };
       }
+      // 5c) "weekly on …"
       m = t.match(/^weekly on (.+)$/);
       if (m) {
-        const byDay = m[1]
-          .split(/[, ]+/)
-          .map((x) => DOW_MAP[x.toLowerCase()] || null)
-          .filter(Boolean);
+        const byDay = normalizeByDayList(m[1]);
         if (byDay.length) return { kind: "WEEKLY", interval: 1, byDay };
       }
+      // 5d) Bare "every <list/range/shorthand>"
+      if (t.startsWith("every ")) {
+        const after = t.slice(6).trim();
+        const byDay = normalizeByDayList(after);
+        if (byDay.length) return { kind: "WEEKLY", interval: 1, byDay };
+        // also accept "every monday(s)" etc. via your earlier path already handled above
+      }
 
+      // 6) Monthly: explicit EOM
+      if (t === "last day of the month" || t === "last day of each month" || t === "eom")
+        return { kind: "MONTHLY_LAST_DAY" };
+
+      // 7) Monthly: semimonthly / multi-day
+      m = t.match(/^(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s*(?:,|and|&)\s*(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) {
+        const d1 = parseInt(m[1], 10), d2 = parseInt(m[2], 10);
+        return { kind: "MONTHLY_MULTI_DAY", days: [d1, d2] };
+      }
+      m = t.match(/^(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+and\s+last\s+day\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) {
+        const d = parseInt(m[1], 10);
+        return { kind: "MONTHLY_MIXED_DAY", days: [d], last: true };
+      }
+      m = t.match(/^on\s+the\s+(.+)\s+of\s+(?:each|every)\s+month$/);
+      if (m) {
+        const parts = splitList(m[1].replace(/\b(?:and|&)\b/g, ","));
+        const days = parts
+          .map(x => x.replace(/(st|nd|rd|th)$/i, ""))
+          .map(x => parseInt(x, 10))
+          .filter(n => Number.isInteger(n) && n >= 1 && n <= 31);
+        if (days.length >= 1) return { kind: "MONTHLY_MULTI_DAY", days };
+      }
+
+      // 8) Monthly: your existing single-day variants
       if (t === "monthly") return { kind: "MONTHLY_DAY", day: todayLocal().getDate() };
       m = t.match(/^every month on day (\d{1,2})$/);
       if (m) return { kind: "MONTHLY_DAY", day: parseInt(m[1], 10) };
-      m = t.match(
-        /^every month on the (1st|2nd|3rd|4th|last)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/
-      );
-      if (m) return { kind: "MONTHLY_NTH", nth: m[1], dow: DOW_MAP[m[2]] };
-
       m = t.match(/^(?:the\s+)?(\d{1,2}|1st|2nd|3rd|4th)\s+day\s+of\s+(?:each|every)\s+month$/);
       if (m) return { kind: "MONTHLY_DAY", day: ordFromText(m[1]) };
       m = t.match(/^day\s+(\d{1,2})\s+(?:of|in)?\s*(?:each|every)\s+month$/);
       if (m) return { kind: "MONTHLY_DAY", day: parseInt(m[1], 10) };
 
-      m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:of\s+)?(?:each|every)\s+month$/);
+      // 9) Monthly: ordinal weekday (incl. compact), plus penultimate/weekday
+      m = t.match(/^(?:every month on the|on the|every month the|the)\s+(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)$/);
       if (m) {
         const nth = m[1].toLowerCase();
         const dow = dowFromAlias(m[2]);
         if (dow) return { kind: "MONTHLY_NTH", nth, dow };
       }
-      // compact variant: “2nd Tue each month”
       m = t.match(/^(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:each|every)\s+month$/);
       if (m) {
         const nth = m[1].toLowerCase();
         const dow = dowFromAlias(m[2]);
         if (dow) return { kind: "MONTHLY_NTH", nth, dow };
       }
+      m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth)\s+and\s+(1st|first|2nd|second|3rd|third|4th|fourth)\s+([a-z]+)\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) {
+        const nths = [m[1].toLowerCase(), m[2].toLowerCase()];
+        const dow = dowFromAlias(m[3]);
+        if (dow) return { kind: "MONTHLY_MULTI_NTH", nths, dow };
+      }
+      m = t.match(/^(?:second\s+last|penultimate)\s+([a-z]+)\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) {
+        const dow = dowFromAlias(m[1]);
+        if (dow) return { kind: "MONTHLY_NTH_FROM_END", nth: 2, dow };
+      }
+      m = t.match(/^(first|last)\s+weekday\s+(?:of\s+)?(?:each|every)\s+month$/);
+      if (m) return { kind: "MONTHLY_NTH_WEEKDAY", nth: m[1].toLowerCase() };
 
-      // “every weekend”
-      if (t === "every weekend" || t === "weekend")
-        return { kind: "WEEKLY", interval: 1, byDay: ["SA", "SU"] };
+      // 10) Every N months (date or ordinal weekday)
+      m = t.match(/^every (\d+)\s*months?(?:\s+on\s+the\s+(\d{1,2})(?:st|nd|rd|th)?)?$/);
+      if (m) {
+        const interval = parseInt(m[1], 10);
+        const day = m[2] ? parseInt(m[2], 10) : todayLocal().getDate();
+        return { kind: "MONTHLY_DAY", interval, day };
+      }
+      m = t.match(/^every (\d+)\s*months?\s+on\s+the\s+(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)$/);
+      if (m) {
+        const interval = parseInt(m[1], 10);
+        const nth = m[2].toLowerCase();
+        const dow = dowFromAlias(m[3]);
+        if (dow) return { kind: "MONTHLY_NTH", interval, nth, dow };
+      }
 
+      // 11) Quarterly / semiannual / annual synonyms
+      if (t === "quarterly")
+        return { kind: "MONTHLY_DAY", interval: 3, day: todayLocal().getDate() };
+      if (t === "semiannual" || t === "semi-annually" || t === "twice a year")
+        return { kind: "MONTHLY_DAY", interval: 6, day: todayLocal().getDate() };
+      if (t === "annually" || t === "yearly")
+        return { kind: "YEARLY", month: todayLocal().getMonth() + 1, day: todayLocal().getDate() };
+
+      // 12) Yearly: explicit month/day or ordinal weekday-in-month
+      m = t.match(/^every\s+([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?$/);
+      if (m) {
+        const month = monthFromText(m[1]);
+        const day = parseInt(m[2], 10);
+        if (month) return { kind: "YEARLY", month, day };
+      }
+      m = t.match(/^on\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(?:every\s+year|annually|yearly)$/);
+      if (m) {
+        const day = parseInt(m[1], 10);
+        const month = monthFromText(m[2]);
+        if (month) return { kind: "YEARLY", month, day };
+      }
+      m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+of\s+([a-z]+)\s+(?:every\s+year|annually|yearly)?$/);
+      if (m) {
+        const nth = m[1].toLowerCase();
+        const dow = dowFromAlias(m[2]);
+        const month = monthFromText(m[3]);
+        if (dow && month) return { kind: "YEARLY_NTH", month, nth, dow };
+      }
+
+      // No match
       return null;
     }
 

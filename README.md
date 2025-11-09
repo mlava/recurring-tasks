@@ -133,44 +133,84 @@ These commands let you turn an existing task into a recurring one or start a new
 
 ## 📆 Repeat Field Syntax
 
-The `repeat::` attribute accepts **natural language** patterns — flexible and case-insensitive.
+The `repeat::` attribute accepts **natural language** patterns — flexible and case-insensitive.  
+Separators like commas, `/`, `&`, and the word **and** are supported. Abbreviations (`Mon`, `Tue`, `Thu`, `MWF`, `TTh`) and ranges (`Mon–Fri`) are accepted.
 
-### 🗓️ Daily
+### 🗓️ Daily & Business Days
 | Example | Meaning |
-|----------|----------|
-| every day | once per day |
-| every 2 days | every second day |
-| every other day | every 2 days |
-| every weekday | Monday–Friday |
+|---|---|
+| `every day` | once per day |
+| `every 2 days` | every second day |
+| `every other day` | alias for every 2 days |
+| `every weekday` \| `business days` \| `workdays` | Monday–Friday |
+| `every 2 weekdays` | every 2 business days (Mon–Fri cadence) |
 
 ### 📅 Weekly
 | Example | Meaning |
-|----------|----------|
-| every monday | every week on Monday |
-| every week | once per week |
-| every other week | every two weeks |
-| weekly on tue, thu | every Tuesday and Thursday |
-| every 3 weeks on fri | every third Friday |
+|---|---|
+| `every monday` | every week on Monday |
+| `every mon` \| `every mon(s)` | same as above |
+| `every week` \| `weekly` | once per week (no fixed day) |
+| `every other week` \| `every second week` \| `biweekly` \| `fortnightly` | every 2 weeks |
+| `weekly on tue, thu` | every Tuesday and Thursday |
+| `every 3 weeks on fri` | every third Friday |
+| `every mon, wed, fri` \| `MWF` | every Monday, Wednesday, Friday |
+| `every tue & thu` \| `TTh` | every Tuesday and Thursday |
+| `every mon–fri` | Monday through Friday (range) |
+| `every fri–sun` | Friday through Sunday (wrap/range supported) |
 
 ### 🗓️ Monthly (by day number)
 | Example | Meaning |
-|----------|----------|
-| monthly | same day each month |
-| every month on day 15 | 15th of each month |
-| the 1st day of each month | 1st day of month |
-| 31st day → clamps to Feb 29/28 | auto-adjusts for shorter months |
+|---|---|
+| `monthly` | same calendar day each month (anchors today if unspecified) |
+| `every month on day 15` | 15th of each month |
+| `the 1st day of each month` | 1st day of month |
+| `day 31 of each month` | clamps to end of shorter months (e.g., Feb 28/29) |
+| `last day of the month` \| `EOM` | last calendar day each month |
+| `on the 1st and 15th of each month` | semimonthly 1st & 15th |
+| `on the 15th and last day of each month` | 15th plus EOM |
+| `on the 5th, 12th, 20th of each month` | multiple specific dates |
 
 ### 🗓️ Monthly (by weekday)
 | Example | Meaning |
-|----------|----------|
-| first monday of each month | 1st Monday every month |
-| 2nd wed every month | 2nd Wednesday |
-| last friday of each month | final Friday each month |
+|---|---|
+| `first monday of each month` | 1st Monday every month |
+| `2nd wed every month` | 2nd Wednesday |
+| `last friday of each month` | final Friday each month |
+| `1st and 3rd monday of each month` | first & third Monday |
+| `penultimate friday of each month` \| `second last friday ...` | Friday one week before the last |
+| `first weekday of each month` | first Mon–Fri day of the month |
+| `last weekday of each month` | last Mon–Fri day of the month |
+
+### 🗓️ Every N Months
+| Example | Meaning |
+|---|---|
+| `every 2 months on the 10th` | bi-monthly on the 10th |
+| `every 3 months on the 2nd tuesday` | quarterly on 2nd Tuesday |
+| `quarterly` | every 3 months on the anchor day |
+| `semiannual` \| `twice a year` | every 6 months on the anchor day |
 
 ### 📆 Weekends
 | Example | Meaning |
-|----------|----------|
-| every weekend | Saturday & Sunday |
+|---|---|
+| `every weekend` \| `weekends` | Saturday & Sunday |
+
+### 🎉 Yearly
+| Example | Meaning |
+|---|---|
+| `every March 10` | yearly on Mar 10 |
+| `on 10 March every year` | yearly on Mar 10 |
+| `first Monday of May (every year)` | yearly: 1st Monday in May |
+| `annually` \| `yearly` | once per year on the anchor date |
+
+---
+
+#### Notes
+- **Abbreviations & aliases**: `Mon/Mon./Monday`, `Thu/Thurs/Thursday`, `MWF`, `TTh` are accepted.  
+- **Ranges**: `Mon–Fri` (or `Mon-Fri`) expands to all included days.  
+- **Clamping**: Day numbers beyond a month’s end **clamp** to the last valid date (e.g., `31st` → Feb 28/29).  
+- **“Every N weekdays”** counts **business days** (Mon–Fri) only.  
+- **Pluralization** is flexible: `monday`/`mondays`, `week`/`weeks`, etc.
 
 ---
 
