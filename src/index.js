@@ -3064,6 +3064,8 @@ export default {
       return dates.map((d) => formatFriendlyDate(d, set)).join(" → ");
     }
 
+    // placeholder for future settings UI
+    /*
     function handleAttributeSurfaceChange(evtOrValue) {
       const prev = lastAttrSurface || extensionAPI.settings.get("rt-attribute-surface") || "Child";
       let next =
@@ -3090,6 +3092,7 @@ export default {
         void populateChildAttrsFromProps();
       }
     }
+    */
 
     function handleAttributeNameChange() {
       repeatOverrides.clear();
