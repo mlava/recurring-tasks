@@ -2039,6 +2039,24 @@ export default {
       const seen = new Set();
       return out.filter(d => (seen.has(d) ? false : (seen.add(d), true)));
     }
+    const MONTH_KEYWORD_INTERVAL_LOOKUP = {
+      quarterly: 3,
+      "every quarter": 3,
+      semiannual: 6,
+      "semi annual": 6,
+      semiannually: 6,
+      "semi annually": 6,
+      "semi-annual": 6,
+      "semi-annually": 6,
+      "twice a year": 6,
+      "twice-a-year": 6,
+      "twice per year": 6,
+      "twice-per-year": 6,
+    };
+
+    function keywordIntervalFromText(text) {
+      return MONTH_KEYWORD_INTERVAL_LOOKUP[text] || null;
+    }
 
     // === Merged + extended parser ===
     function parseRuleText(s) {
@@ -2050,6 +2068,11 @@ export default {
         if (quickSet) return { kind: "WEEKLY", interval: 1, byDay: quickSet };
         const looseDays = normalizeByDayList(t);
         if (looseDays.length) return { kind: "WEEKLY", interval: 1, byDay: looseDays };
+      }
+
+      const keywordInterval = keywordIntervalFromText(t);
+      if (keywordInterval) {
+        return { kind: "MONTHLY_DAY", interval: keywordInterval };
       }
 
       // 0) Simple daily & weekday/weekend anchors
@@ -2154,7 +2177,7 @@ export default {
         const dow = dowFromAlias(m[2]);
         if (dow) return { kind: "MONTHLY_NTH", nth, dow };
       }
-      m = t.match(/^(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:each|every)\s+month$/);
+      m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+(?:of\s+)?(?:each|every)\s+month$/);
       if (m) {
         const nth = m[1].toLowerCase();
         const dow = dowFromAlias(m[2]);
@@ -2190,18 +2213,22 @@ export default {
       }
 
       // 11) Quarterly / semiannual / annual synonyms
-      if (t === "quarterly")
-        return { kind: "MONTHLY_DAY", interval: 3, day: todayLocal().getDate() };
-      if (t === "semiannual" || t === "semi-annually" || t === "twice a year")
-        return { kind: "MONTHLY_DAY", interval: 6, day: todayLocal().getDate() };
-      if (t === "annually" || t === "yearly")
-        return { kind: "YEARLY", month: todayLocal().getMonth() + 1, day: todayLocal().getDate() };
+      const yearlyKeyword = t.match(/^(annually|yearly|every year)$/);
+      if (yearlyKeyword) {
+        return { kind: "YEARLY" };
+      }
 
       // 12) Yearly: explicit month/day or ordinal weekday-in-month
-      m = t.match(/^every\s+([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?$/);
+      m = t.match(/^(?:every|each)\s+([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?$/);
       if (m) {
         const month = monthFromText(m[1]);
         const day = parseInt(m[2], 10);
+        if (month) return { kind: "YEARLY", month, day };
+      }
+      m = t.match(/^every\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)$/);
+      if (m) {
+        const day = parseInt(m[1], 10);
+        const month = monthFromText(m[2]);
         if (month) return { kind: "YEARLY", month, day };
       }
       m = t.match(/^on\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(?:every\s+year|annually|yearly)$/);
@@ -2209,6 +2236,18 @@ export default {
         const day = parseInt(m[1], 10);
         const month = monthFromText(m[2]);
         if (month) return { kind: "YEARLY", month, day };
+      }
+      m = t.match(/^([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?$/);
+      if (m) {
+        const month = monthFromText(m[1]);
+        const day = parseInt(m[2], 10);
+        if (month && day) return { kind: "YEARLY", month, day };
+      }
+      m = t.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(?:every\s+year)?$/);
+      if (m) {
+        const day = parseInt(m[1], 10);
+        const month = monthFromText(m[2]);
+        if (month && day) return { kind: "YEARLY", month, day };
       }
       m = t.match(/^(?:the\s+)?(1st|first|2nd|second|3rd|third|4th|fourth|last)\s+([a-z]+)\s+of\s+([a-z]+)\s+(?:every\s+year|annually|yearly)?$/);
       if (m) {
@@ -2220,6 +2259,18 @@ export default {
 
       // No match
       return null;
+    }
+
+    function resolveMonthlyInterval(rule) {
+      const raw = Number.parseInt(rule?.interval, 10);
+      return Number.isFinite(raw) && raw > 0 ? raw : 1;
+    }
+
+    function resolveMonthlyDay(rule, meta) {
+      if (Number.isInteger(rule?.day) && rule.day >= 1) return rule.day;
+      const due = meta?.due instanceof Date && !Number.isNaN(meta.due.getTime()) ? meta.due : null;
+      if (due) return due.getDate();
+      return todayLocal().getDate();
     }
 
     function computeNextDue(meta, set, depth = 0, ruleOverride = null) {
@@ -2246,12 +2297,17 @@ export default {
         case "WEEKLY":
           next = nextWeekly(base, rule);
           break;
-        case "MONTHLY_DAY":
-          next = nextMonthOnDay(base, rule.day);
+        case "MONTHLY_DAY": {
+          const interval = resolveMonthlyInterval(rule);
+          const day = resolveMonthlyDay(rule, meta);
+          next = nextMonthOnDay(base, day, interval);
           break;
-        case "MONTHLY_NTH":
-          next = nextMonthOnNthDow(base, rule.nth, rule.dow);
+        }
+        case "MONTHLY_NTH": {
+          const interval = resolveMonthlyInterval(rule);
+          next = nextMonthOnNthDow(base, rule.nth, rule.dow, interval);
           break;
+        }
         case "MONTHLY_LAST_DAY":
           next = nextMonthLastDay(base);
           break;
@@ -2260,6 +2316,21 @@ export default {
           break;
         case "MONTHLY_MIXED_DAY":
           next = nextMonthlyMixedDay(base, rule);
+          break;
+        case "MONTHLY_MULTI_NTH":
+          next = nextMonthlyMultiNth(base, rule);
+          break;
+        case "MONTHLY_NTH_FROM_END":
+          next = nextMonthlyNthFromEnd(base, rule);
+          break;
+        case "MONTHLY_NTH_WEEKDAY":
+          next = nextMonthlyWeekday(base, rule);
+          break;
+        case "YEARLY":
+          next = nextYearlyOnDay(base, rule, meta);
+          break;
+        case "YEARLY_NTH":
+          next = nextYearlyNthDow(base, rule, meta);
           break;
         default:
           next = null;
@@ -2288,34 +2359,179 @@ export default {
       }
       return addDaysLocal(base, 7 * interval);
     }
-    function nextMonthOnDay(base, day) {
-      const y = base.getFullYear();
-      const m = base.getMonth();
-      const cand = new Date(y, m + 1, day, 12, 0, 0, 0);
-      if (cand.getMonth() !== (m + 1) % 12) return new Date(y, m + 2, 0, 12, 0, 0, 0); // clamp
-      return cand;
+    function nextMonthOnDay(base, day, interval = 1) {
+      const step = Number.isFinite(interval) && interval > 0 ? Math.trunc(interval) : 1;
+      let year = base.getFullYear();
+      let monthIndex = base.getMonth();
+      const currentMonthCandidate = new Date(year, monthIndex, clampDayInMonth(year, monthIndex, day), 12, 0, 0, 0);
+      if (currentMonthCandidate > base && step === 1) return currentMonthCandidate;
+      ({ year, month: monthIndex } = advanceMonth(year, monthIndex, step));
+      const safeDay = clampDayInMonth(year, monthIndex, day);
+      return new Date(year, monthIndex, safeDay, 12, 0, 0, 0);
     }
-    function nextMonthOnNthDow(base, nthText, dowCode) {
+    function nextMonthOnNthDow(base, nthText, dowCode, interval = 1) {
       const nthValue = ordFromText(nthText);
       if (nthValue == null) return null;
+      const step = Number.isFinite(interval) && interval > 0 ? Math.trunc(interval) : 1;
       let year = base.getFullYear();
-      let month = base.getMonth();
-      let candidate = computeNthDowForMonth(year, month, nthValue, dowCode);
-      if (!candidate || candidate <= base) {
-        month += 1;
-        if (month > 11) {
-          month = 0;
-          year += 1;
-        }
-        candidate = computeNthDowForMonth(year, month, nthValue, dowCode);
+      let monthIndex = base.getMonth();
+      let candidate = computeNthDowForMonth(year, monthIndex, nthValue, dowCode);
+      if (candidate && candidate > base && step === 1) {
+        return candidate;
       }
-      return candidate;
+      for (let attempts = 0; attempts < 48; attempts++) {
+        ({ year, month: monthIndex } = advanceMonth(year, monthIndex, step));
+        candidate = computeNthDowForMonth(year, monthIndex, nthValue, dowCode);
+        if (candidate) return candidate;
+      }
+      return null;
+    }
+
+    function clampDayInMonth(year, monthIndex, desired) {
+      const lastDay = new Date(year, monthIndex + 1, 0, 12, 0, 0, 0).getDate();
+      const numeric = Number.isFinite(desired) ? Math.trunc(desired) : lastDay;
+      if (numeric < 1) return 1;
+      if (numeric > lastDay) return lastDay;
+      return numeric;
+    }
+
+    function advanceMonth(year, monthIndex, step) {
+      let nextMonth = monthIndex + step;
+      let nextYear = year;
+      while (nextMonth > 11) {
+        nextMonth -= 12;
+        nextYear += 1;
+      }
+      while (nextMonth < 0) {
+        nextMonth += 12;
+        nextYear -= 1;
+      }
+      return { year: nextYear, month: nextMonth };
     }
 
     function nextMonthLastDay(base) {
       const y = base.getFullYear();
       const m = base.getMonth();
       return new Date(y, m + 1, 0, 12, 0, 0, 0);
+    }
+
+    function resolveYearlyMonth(rule, meta) {
+      if (Number.isInteger(rule?.month) && rule.month >= 1 && rule.month <= 12) {
+        return Math.trunc(rule.month);
+      }
+      const due = meta?.due instanceof Date && !Number.isNaN(meta.due.getTime()) ? meta.due : null;
+      if (due) return due.getMonth() + 1;
+      return todayLocal().getMonth() + 1;
+    }
+
+    function resolveYearlyDay(rule, meta) {
+      if (Number.isInteger(rule?.day) && rule.day >= 1 && rule.day <= 31) {
+        return Math.trunc(rule.day);
+      }
+      const due = meta?.due instanceof Date && !Number.isNaN(meta.due.getTime()) ? meta.due : null;
+      if (due) return due.getDate();
+      return todayLocal().getDate();
+    }
+
+    function nextYearlyOnDay(base, rule, meta) {
+      const month = resolveYearlyMonth(rule, meta);
+      const day = resolveYearlyDay(rule, meta);
+      if (!month || !day) return null;
+      const monthIndex = month - 1;
+      let year = base.getFullYear();
+      const candidate = new Date(year, monthIndex, clampDayInMonth(year, monthIndex, day), 12, 0, 0, 0);
+      if (candidate > base) return candidate;
+      year += 1;
+      return new Date(year, monthIndex, clampDayInMonth(year, monthIndex, day), 12, 0, 0, 0);
+    }
+
+    function nextYearlyNthDow(base, rule, meta) {
+      const month = resolveYearlyMonth(rule, meta);
+      const nthValue = ordFromText(rule?.nth);
+      const dow = rule?.dow;
+      if (!month || nthValue == null || !dow) return null;
+      const monthIndex = month - 1;
+      let year = base.getFullYear();
+      let candidate = computeNthDowForMonth(year, monthIndex, nthValue, dow);
+      if (candidate && candidate > base) return candidate;
+      for (let i = 0; i < 5; i++) {
+        year += 1;
+        candidate = computeNthDowForMonth(year, monthIndex, nthValue, dow);
+        if (candidate) return candidate;
+      }
+      return null;
+    }
+
+    function nextMonthlyMultiNth(base, rule) {
+      const dow = rule?.dow;
+      const nths = Array.isArray(rule?.nths) ? rule.nths : [];
+      if (!dow || !nths.length) return null;
+      const ordinalValues = nths
+        .map((token) => ordFromText(token))
+        .filter((value) => value != null)
+        .sort((a, b) => a - b);
+      if (!ordinalValues.length) return null;
+      let year = base.getFullYear();
+      let monthIndex = base.getMonth();
+      for (let attempts = 0; attempts < 48; attempts++) {
+        const monthCandidates = ordinalValues
+          .map((nth) => computeNthDowForMonth(year, monthIndex, nth, dow))
+          .filter(Boolean)
+          .sort((a, b) => a - b);
+        for (const candidate of monthCandidates) {
+          if (attempts > 0 || candidate > base) {
+            return candidate;
+          }
+        }
+        ({ year, month: monthIndex } = advanceMonth(year, monthIndex, 1));
+      }
+      return null;
+    }
+
+    function nextMonthlyNthFromEnd(base, rule) {
+      const nth = Number.isInteger(rule?.nth) ? rule.nth : Number.parseInt(rule?.nth, 10);
+      const dow = rule?.dow;
+      if (!nth || !dow) return null;
+      let year = base.getFullYear();
+      let monthIndex = base.getMonth();
+      for (let attempts = 0; attempts < 48; attempts++) {
+        const candidate = nthDowFromEnd(year, monthIndex, dow, nth);
+        if (candidate && (attempts > 0 || candidate > base)) return candidate;
+        ({ year, month: monthIndex } = advanceMonth(year, monthIndex, 1));
+      }
+      return null;
+    }
+
+    function nextMonthlyWeekday(base, rule) {
+      const nth = (rule?.nth || "").toString().toLowerCase();
+      if (nth !== "first" && nth !== "last") return null;
+      let year = base.getFullYear();
+      let monthIndex = base.getMonth();
+      for (let attempts = 0; attempts < 48; attempts++) {
+        const candidate =
+          nth === "first" ? firstWeekdayOfMonth(year, monthIndex) : lastWeekdayOfMonth(year, monthIndex);
+        if (candidate && (attempts > 0 || candidate > base)) return candidate;
+        ({ year, month: monthIndex } = advanceMonth(year, monthIndex, 1));
+      }
+      return null;
+    }
+
+    function firstWeekdayOfMonth(year, monthIndex) {
+      let d = new Date(year, monthIndex, 1, 12, 0, 0, 0);
+      for (let i = 0; i < 7; i++) {
+        if (!isWeekend(d)) return d;
+        d = addDaysLocal(d, 1);
+      }
+      return null;
+    }
+
+    function lastWeekdayOfMonth(year, monthIndex) {
+      let d = new Date(year, monthIndex + 1, 0, 12, 0, 0, 0);
+      for (let i = 0; i < 7; i++) {
+        if (!isWeekend(d)) return d;
+        d = addDaysLocal(d, -1);
+      }
+      return null;
     }
 
     function nextMonthlyMultiDay(base, rule) {

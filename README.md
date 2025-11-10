@@ -210,18 +210,6 @@ The `repeat::` attribute accepts **natural-language** patterns. Parsing is **cas
 | `on the 15th and last day of each month` | 15th + EOM |
 | `on the 5th, 12th, 20th of each month` \| `on the 5th/12th/20th of each month` \| `on the 5th & 12th & 20th of each month` | multiple specific dates |
 
----
-
-### 📆 Weekends
-| Example | Meaning |
-|---|---|
-| `every weekend` \| `weekends` | Saturday & Sunday |
-
----
-
-## 🚧 Not Yet Supported (Planned)
-These patterns are recognized in the test set but **not yet supported** in the current build:
-
 ### 🗓️ Monthly — Nth Weekday Variants
 - `first monday of each month`
 - `2nd wed every month`
@@ -240,12 +228,20 @@ These patterns are recognized in the test set but **not yet supported** in the c
 - `quarterly`
 - `semiannual` / `semi-annually` / `twice a year`
 
+---
+
 ### 🎉 Yearly — Fixed Date & Nth Weekday-in-Month
 - `every March 10`, `on 10 March every year`
 - `annually`, `yearly` (fixed-date anchor)
 - `first Monday of May every year`
 
-> As these land, they’ll move from **Not Yet Supported** into the supported sections above.
+---
+
+### 📆 Weekends
+| Example | Meaning |
+|---|---|
+| `every weekend` \| `weekends` | Saturday & Sunday |
+
 
 #### Notes
 - **Abbreviations & aliases**: `Mon/Mon./Monday`, `Thu/Thurs/Thursday`, `MWF`, `TTh` are accepted.  
