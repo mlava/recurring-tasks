@@ -2,6 +2,7 @@ import iziToast from "izitoast";
 
 const DEFAULT_REPEAT_ATTR = "attrRepeat_RT";
 const DEFAULT_DUE_ATTR = "attrDue_RT";
+const ADVANCE_ATTR = "attrAdvance_RT";
 const INSTALL_TOAST_KEY = "rt-intro-toast";
 
 let lastAttrNames = null;
@@ -24,12 +25,6 @@ export default {
           name: "DNP heading (optional)",
           description: "Create under this heading on DNP when destination is DNP under heading",
           action: { type: "input", placeholder: "Tasks" },
-        },
-        {
-          id: "rt-advance-from",
-          name: "Calculate next due date from",
-          description: "Calculate next date from current due date or TODO completion date",
-          action: { type: "select", items: ["Due", "Completion"] },
         },
         // placeholder for future feature - hidden mode
         /*
@@ -282,7 +277,6 @@ export default {
     }
 
     function S(attrNamesOverride = null) {
-      const adv = (extensionAPI.settings.get("rt-advance-from") || "Due").toString().toLowerCase();
       const attrSurface = extensionAPI.settings.get("rt-attribute-surface") || "Child";
       if (attrSurface !== lastAttrSurface) {
         lastAttrSurface = attrSurface;
@@ -309,7 +303,7 @@ export default {
         destination: extensionAPI.settings.get("rt-destination") || "DNP",
         dnpHeading: extensionAPI.settings.get("rt-dnp-heading") || "Tasks",
         dateFormat: "ROAM",
-        advanceFrom: adv,
+        advanceFrom: "due",
         attributeSurface: attrSurface,
         confirmBeforeSpawn: !!extensionAPI.settings.get("rt-confirm"),
         timezone: tz,
@@ -980,14 +974,21 @@ export default {
                   meta.due = overrideDue;
                   meta.props = { ...(meta.props || {}), due: formatDate(overrideDue, set) };
                 }
-                const completion = await markCompleted(block, meta, set);
+                const advanceMode = await ensureAdvancePreference(uid, block, meta, set, input);
+                if (!advanceMode) {
+                  processedMap.delete(uid);
+                  continue;
+                }
+                meta.advanceFrom = advanceMode;
+                const setWithAdvance = { ...set, advanceFrom: advanceMode };
+                const completion = await markCompleted(block, meta, setWithAdvance);
                 processedMap.set(uid, completion.processedAt);
 
                 const { meta: resolvedMeta, block: resolvedBlock } = await resolveMetaAfterCompletion(
                   snapshot,
                   uid,
                   meta,
-                  set
+                  setWithAdvance
                 );
                 if (overrideRepeat) {
                   resolvedMeta.repeat = overrideRepeat;
@@ -1002,21 +1003,21 @@ export default {
                   overrideDue && overrideDue instanceof Date && !Number.isNaN(overrideDue.getTime())
                     ? overrideDue
                     : null;
-                const nextDue = nextDueCandidate || computeNextDue(resolvedMeta, set, 0, overrideRule);
+                const nextDue = nextDueCandidate || computeNextDue(resolvedMeta, setWithAdvance, 0, overrideRule);
                 if (!nextDue) {
                   processedMap.delete(uid);
                   continue;
                 }
 
                 const parentForSpawn = resolvedBlock || (await getBlock(uid)) || block;
-                const newUid = await spawnNextOccurrence(parentForSpawn, resolvedMeta, nextDue, set);
+                const newUid = await spawnNextOccurrence(parentForSpawn, resolvedMeta, nextDue, setWithAdvance);
                 registerUndoAction({
                   blockUid: uid,
                   snapshot,
                   completion,
                   newBlockUid: newUid,
                   nextDue,
-                  set,
+                  set: setWithAdvance,
                   overrideEntry: overrideEntry
                     ? {
                       ...(overrideEntry.repeat ? { repeat: overrideEntry.repeat } : {}),
@@ -1255,6 +1256,9 @@ export default {
         dueDate = overrideEntry.due;
       }
 
+      const advanceEntry = childAttrMap[ADVANCE_ATTR.toLowerCase()];
+      const advanceFrom = normalizeAdvanceValue(advanceEntry?.value) || null;
+
       return {
         uid: block.uid,
         repeat: repeatText,
@@ -1265,6 +1269,7 @@ export default {
         rtParent: rt.parent || null,
         pageUid: block.page?.uid || null,
         props,
+        advanceFrom,
       };
     }
 
@@ -1543,6 +1548,37 @@ export default {
       delete meta.childAttrMap[getAttrLabel(type, attrNames)];
       const label = getAttrLabel(type, attrNames);
       if (label === type) delete meta.childAttrMap[type];
+    }
+
+    function normalizeAdvanceValue(value) {
+      if (!value) return null;
+      const v = String(value).trim().toLowerCase();
+      if (v === "completion" || v === "completion date") return "completion";
+      if (v === "due" || v === "due date") return "due";
+      return null;
+    }
+
+    function advanceLabelForMode(mode) {
+      return mode === "completion" ? "completion date" : "due date";
+    }
+
+    async function ensureAdvanceChildAttr(uid, mode, meta) {
+      const label = advanceLabelForMode(mode);
+      const result = await ensureChildAttr(uid, ADVANCE_ATTR, label);
+      if (meta) {
+        meta.childAttrMap = meta.childAttrMap || {};
+        meta.childAttrMap[ADVANCE_ATTR.toLowerCase()] = { value: label, uid: result.uid };
+      }
+    }
+
+    async function revertBlockCompletion(block) {
+      if (!block) return;
+      const uid = block.uid;
+      const current = block.string || "";
+      const reverted = current.replace(/{{\[\[DONE\]\]}}/i, "{{[[TODO]]}}");
+      if (reverted !== current) {
+        await updateBlockString(uid, reverted);
+      }
     }
 
     function normalizeRepeatRuleText(value) {
@@ -1862,6 +1898,10 @@ export default {
       if (set.attributeSurface === "Child") {
         await ensureChildAttrForType(newUid, "repeat", meta.repeat, set.attrNames);
         await ensureChildAttrForType(newUid, "due", nextDueStr, set.attrNames);
+        const advanceEntry = meta.childAttrMap?.[ADVANCE_ATTR.toLowerCase()];
+        if (advanceEntry?.value) {
+          await ensureChildAttr(newUid, ADVANCE_ATTR, advanceEntry.value);
+        }
       }
 
       await updateBlockProps(newUid, {
@@ -1901,11 +1941,61 @@ export default {
     }
 
     // === Small helpers (no overlap with your existing ones) ===
-    const DOW_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+const DOW_MAP = {
+  sunday: "SU",
+  monday: "MO",
+  tuesday: "TU",
+  wednesday: "WE",
+  thursday: "TH",
+  friday: "FR",
+  saturday: "SA",
+};
+const DOW_IDX = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+const ORD_MAP = { "1st": 1, "first": 1, "2nd": 2, "second": 2, "3rd": 3, "third": 3, "4th": 4, "fourth": 4, "last": -1 };
+    const DOW_ALIASES = {
+      su: "sunday",
+      sun: "sunday",
+      sunday: "sunday",
+      mo: "monday",
+      mon: "monday",
+      monday: "monday",
+      tu: "tuesday",
+      tue: "tuesday",
+      tues: "tuesday",
+      tuesday: "tuesday",
+      we: "wednesday",
+      wed: "wednesday",
+      wednesday: "wednesday",
+      th: "thursday",
+      thu: "thursday",
+      thur: "thursday",
+      thurs: "thursday",
+      thursday: "thursday",
+      fr: "friday",
+      fri: "friday",
+  friday: "friday",
+  sa: "saturday",
+  sat: "saturday",
+  saturday: "saturday",
+};
+const DOW_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+
+function ordFromText(value) {
+  if (!value) return null;
+  const numeric = Number(value.replace(/(st|nd|rd|th)$/i, ""));
+  if (!Number.isNaN(numeric) && numeric >= 1 && numeric <= 31) return numeric;
+  return ORD_MAP[value.toLowerCase()] ?? null;
+}
     const MONTH_MAP = {
       january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
       july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
     };
+
+    function dowFromAlias(token) {
+      if (!token) return null;
+      const norm = (DOW_ALIASES[token.toLowerCase()] || token).toLowerCase();
+      return DOW_MAP[norm] || null;
+    }
 
     function monthFromText(x) {
       if (!x) return null;
@@ -1955,6 +2045,10 @@ export default {
     function parseRuleText(s) {
       if (!s) return null;
       const t = s.trim().replace(/\s+/g, " ").toLowerCase();
+      const quickSet = parseAbbrevSet(t);
+      if (quickSet) return { kind: "WEEKLY", interval: 1, byDay: quickSet };
+      const looseDays = normalizeByDayList(t);
+      if (looseDays.length) return { kind: "WEEKLY", interval: 1, byDay: looseDays };
 
       // 0) Simple daily & weekday/weekend anchors
       if (t === "daily" || t === "every day") return { kind: "DAILY", interval: 1 };
@@ -2156,6 +2250,15 @@ export default {
         case "MONTHLY_NTH":
           next = nextMonthOnNthDow(base, rule.nth, rule.dow);
           break;
+        case "MONTHLY_LAST_DAY":
+          next = nextMonthLastDay(base);
+          break;
+        case "MONTHLY_MULTI_DAY":
+          next = nextMonthlyMultiDay(base, rule);
+          break;
+        case "MONTHLY_MIXED_DAY":
+          next = nextMonthlyMixedDay(base, rule);
+          break;
         default:
           next = null;
       }
@@ -2200,6 +2303,48 @@ export default {
         return lastDowOnOrBefore(last, dowCode);
       }
       return nthDowOfMonth(new Date(y, m, 1, 12, 0, 0, 0), dowCode, nth);
+    }
+
+    function nextMonthLastDay(base) {
+      const y = base.getFullYear();
+      const m = base.getMonth();
+      return new Date(y, m + 1, 0, 12, 0, 0, 0);
+    }
+
+    function nextMonthlyMultiDay(base, rule) {
+      const list = Array.isArray(rule.days) ? rule.days : [];
+      if (!list.length) return null;
+      const normalized = list
+        .map((token) => (typeof token === "string" ? token.toUpperCase() : token))
+        .map((token) => (token === "LAST" ? "LAST" : Number(token)))
+        .filter((token) => token === "LAST" || (Number.isInteger(token) && token >= 1 && token <= 31))
+        .sort((a, b) => {
+          if (a === "LAST") return 1;
+          if (b === "LAST") return -1;
+          return a - b;
+        });
+      if (!normalized.length) return null;
+      const y = base.getFullYear();
+      const m = base.getMonth();
+      const day = base.getDate();
+      for (const token of normalized) {
+        if (token === "LAST") {
+          const candidate = new Date(y, m + 1, 0, 12, 0, 0, 0);
+          if (candidate.getDate() > day) return candidate;
+        } else if (token > day) {
+          return new Date(y, m, token, 12, 0, 0, 0);
+        }
+      }
+      const nextMonthBase = new Date(y, m + 1, 1, 12, 0, 0, 0);
+      return nextMonthlyMultiDay(nextMonthBase, rule);
+    }
+
+    function nextMonthlyMixedDay(base, rule) {
+      const days = Array.isArray(rule.days) ? rule.days : [];
+      const includeLast = !!rule.last;
+      const combined = [...days];
+      if (includeLast) combined.push("LAST");
+      return nextMonthlyMultiDay(base, { days: combined });
     }
     function nthDowOfMonth(first, dowCode, nth) {
       const target = DOW_IDX.indexOf(dowCode);
@@ -2741,6 +2886,121 @@ export default {
           onClosed: () => finish(null),
         });
       });
+    }
+
+    async function ensureAdvancePreference(uid, block, meta, set, checkbox) {
+      const existing = normalizeAdvanceValue(meta.advanceFrom);
+      if (existing) return existing;
+      const choice = await promptAdvanceModeSelection(meta, set);
+      if (!choice) {
+        await revertBlockCompletion(block);
+        if (checkbox) checkbox.checked = false;
+        toast("Recurring task completion cancelled.");
+        return null;
+      }
+      await ensureAdvanceChildAttr(uid, choice, meta);
+      meta.advanceFrom = choice;
+      return choice;
+    }
+
+    async function promptAdvanceModeSelection(meta, set) {
+      const rule = parseRuleText(meta.repeat, set);
+      const dueSet = { ...set, advanceFrom: "due" };
+      const completionSet = { ...set, advanceFrom: "completion" };
+      const previewLimit = determineAdvancePreviewLimit(rule);
+      const duePreview = previewOccurrences(meta, dueSet, previewLimit);
+      const completionPreview = previewOccurrences(meta, completionSet, previewLimit);
+      const message = `
+        <div class="rt-advance-choice">
+          <p>Select how this series should schedule future occurrences.</p>
+          <p><strong>Due date</strong>: ${escapeHtml(formatPreviewDates(duePreview, set))}</p>
+          <p><strong>Completion date</strong>: ${escapeHtml(formatPreviewDates(completionPreview, set))}</p>
+          <p class="rt-note">You can change this later by editing the <code>${ADVANCE_ATTR}</code> child block.</p>
+        </div>
+      `;
+      return new Promise((resolve) => {
+        let resolved = false;
+        const finish = (value) => {
+          if (resolved) return;
+          resolved = true;
+          resolve(value);
+        };
+        iziToast.question({
+          theme: "light",
+          color: "black",
+          layout: 2,
+          class: "recTasks",
+          position: "center",
+          drag: false,
+          timeout: false,
+          close: true,
+          overlay: true,
+          title: "Choose scheduling mode",
+          message,
+          buttons: [
+            [
+              "<button>Due date</button>",
+              (instance, toastEl) => {
+                instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+                finish("due");
+              },
+              true,
+            ],
+            [
+              "<button>Completion date</button>",
+              (instance, toastEl) => {
+                instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+                finish("completion");
+              },
+            ],
+            [
+              "<button>Cancel</button>",
+              (instance, toastEl) => {
+                instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
+                finish(null);
+              },
+            ],
+          ],
+          onClosed: () => finish(null),
+        });
+      });
+    }
+
+    function determineAdvancePreviewLimit(rule) {
+      if (!rule) return 1;
+      if (rule.kind === "WEEKLY" && Array.isArray(rule.byDay) && rule.byDay.length > 1) {
+        return Math.min(rule.byDay.length, 3);
+      }
+      return 1;
+    }
+
+    function previewOccurrences(meta, setOverride, limit = 1) {
+      const clone = cloneMetaForPreview(meta);
+      const dates = [];
+      for (let i = 0; i < limit; i++) {
+        const next = computeNextDue(clone, setOverride);
+        if (!(next instanceof Date)) break;
+        dates.push(new Date(next.getTime()));
+        clone.due = new Date(next.getTime());
+      }
+      return dates;
+    }
+
+    function cloneMetaForPreview(meta) {
+      return {
+        uid: meta.uid,
+        repeat: meta.repeat,
+        due: meta.due ? new Date(meta.due.getTime()) : null,
+        childAttrMap: clonePlain(meta.childAttrMap || {}),
+        props: clonePlain(meta.props || {}),
+        advanceFrom: meta.advanceFrom || null,
+      };
+    }
+
+    function formatPreviewDates(dates, set) {
+      if (!dates.length) return "Not available";
+      if (dates.length === 1) return formatFriendlyDate(dates[0], set);
+      return dates.map((d) => formatFriendlyDate(d, set)).join(" → ");
     }
 
     function handleAttributeSurfaceChange(evtOrValue) {

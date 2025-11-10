@@ -131,6 +131,7 @@
 .recTasks>.iziToast-body .iziToast-buttons, 
 .recTasks2>.iziToast-body .iziToast-buttons {
     float: inline-end !important;
+    min-width: auto;
 }
 
 .recTasks>.iziToast-body .iziToast-inputs-child, 
@@ -324,9 +325,9 @@ label.revealIn>input {
 .iziToast>.iziToast-body .iziToast-buttons>button,
 .iziToast>.iziToast-body .iziToast-buttons>input:not([type=checkbox]):not([type=radio]) {
     position: relative;
-    display: inline-block;
-    margin-left: 2px;
-    margin-right: 2px;
+    display: block;
+    margin: 6px 6px;
+    min-width: max-content;
     border-radius: 2px;
     border: 0;
     padding: 5px 10px;
