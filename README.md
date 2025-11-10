@@ -76,23 +76,22 @@ You’ll see **visual pills** beside the checkbox for clarity:
 
 ## ⚙️ Settings
 
-### 🗂️ Destination for Next Task
+### Destination for Next Task
 Determines where the next instance of a recurring task appears:
 - **Daily Notes Page (DNP)** — Default; next occurrence is created on its due date’s DNP.  
 - **Same Page** — Next occurrence appears below the current one.
 - **Under a Heading on DNP** — Adds the new task under the heading you specify (default: “Tasks”).
 
-### ⏱️ Calculate Next Due Date From
-Controls whether new due dates are based on:
-- **Due Date** — Start from the current due date.
-- **Completion Date** — Start from when you actually mark it done.
+### DNP heading
+Heading for **Under a Heading on DNP**
 
-### 🧱 Show Repeat/Due As
-Controls how repeat/due metadata appear:
-- **Child** — Adds visible sub-blocks under the TODO.
-- **Hidden** — Stores them as hidden props and shows pills inline.
+### Repeat attribute name
+Label for a child block attribute for the recurrence pattern
 
-### 🗨️ Confirm Before Spawning Next Task
+### Due attribute name
+Label for a child block attribute for due date
+
+### Confirm Before Spawning Next Task
 If enabled, shows a confirmation dialog (“Spawn next occurrence?”) when you complete a recurring TODO.
 
 ---

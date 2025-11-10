@@ -74,6 +74,10 @@ export default {
       label: "Convert TODO to Recurring Task",
       callback: (e) => convertTODO(e),
     });
+    extensionAPI.ui.commandPalette.addCommand({
+      label: "Create a Recurring TODO",
+      callback: () => createRecurringTODO(),
+    });
 
     // Placeholder for future feature - deconvert recurring tasks TODOs
     /* 
@@ -87,11 +91,6 @@ export default {
     });
     */
 
-    extensionAPI.ui.commandPalette.addCommand({
-      label: "Create a Recurring TODO",
-      callback: () => createRecurringTODO(),
-    });
-
     async function convertTODO(e) {
       let fuid = null;
       if (e && e["block-uid"]) {
@@ -100,7 +99,7 @@ export default {
         const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
         fuid = focused && focused["block-uid"];
         if (!fuid) {
-          alert("Place the cursor in the block you want to teleport first."); // TODO convert to izitoast
+          toast("Place the cursor in the block you wish to convert.");
           return;
         }
       }
@@ -190,7 +189,7 @@ export default {
       const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
       const fuid = focused && focused["block-uid"];
       if (fuid == null || fuid == undefined) {
-        alert("Place the cursor in the block you want to teleport first."); // TODO convert to izitoast
+        toast("Place the cursor in the block where you wish to create the TODO.");
         return;
       }
 
