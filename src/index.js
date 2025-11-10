@@ -2812,14 +2812,16 @@ export default {
           settled = true;
           resolve(value);
         };
-        const taskInputHtml = `<input type="text" placeholder="Task text" value="${escapeHtml(
+        const taskInputHtml = `<input data-rt-field="task" type="text" placeholder="Task text" value="${escapeHtml(
           snapshot.task || ""
         )}" />`;
-        const repeatInputHtml = `<input type="text" placeholder="Repeat rule (required)" value="${escapeHtml(
+        const repeatInputHtml = `<input data-rt-field="repeat" type="text" placeholder="Repeat rule (required)" value="${escapeHtml(
           snapshot.repeat || ""
         )}" />`;
         const dateInputClass = `rt-date-input-${Date.now()}`;
-        const dueInputHtml = `<input type="date" class="${dateInputClass}" value="${escapeHtml(snapshot.dueIso || "")}" />`;
+        const dueInputHtml = `<input data-rt-field="due" type="date" class="${dateInputClass}" value="${escapeHtml(
+          snapshot.dueIso || ""
+        )}" />`;
         const promptMessage = includeTaskText
           ? "Enter the task text, repeat rule, and optional due date."
           : "Enter the repeat rule and, optionally, pick a due date.";
@@ -2915,6 +2917,33 @@ export default {
               },
             ],
           ],
+          onOpened: (_instance, toastEl) => {
+            if (!toastEl) return;
+            const focusPrimaryInput = () => {
+              const selectors = includeTaskText
+                ? ["input[data-rt-field=\"task\"]", "input[data-rt-field=\"repeat\"]"]
+                : ["input[data-rt-field=\"repeat\"]"];
+              for (const selector of selectors) {
+                const field = toastEl.querySelector(selector);
+                if (field) {
+                  field.focus();
+                  if (field.setSelectionRange && typeof field.value === "string") {
+                    const len = field.value.length;
+                    field.setSelectionRange(len, len);
+                  }
+                  return true;
+                }
+              }
+              return false;
+            };
+            let attempts = 0;
+            const tryFocus = () => {
+              attempts += 1;
+              if (focusPrimaryInput()) return;
+              if (attempts < 5) requestAnimationFrame(tryFocus);
+            };
+            requestAnimationFrame(tryFocus);
+          },
           onClosed: () => finish(null),
         });
       });
