@@ -1941,17 +1941,17 @@ export default {
     }
 
     // === Small helpers (no overlap with your existing ones) ===
-const DOW_MAP = {
-  sunday: "SU",
-  monday: "MO",
-  tuesday: "TU",
-  wednesday: "WE",
-  thursday: "TH",
-  friday: "FR",
-  saturday: "SA",
-};
-const DOW_IDX = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
-const ORD_MAP = { "1st": 1, "first": 1, "2nd": 2, "second": 2, "3rd": 3, "third": 3, "4th": 4, "fourth": 4, "last": -1 };
+    const DOW_MAP = {
+      sunday: "SU",
+      monday: "MO",
+      tuesday: "TU",
+      wednesday: "WE",
+      thursday: "TH",
+      friday: "FR",
+      saturday: "SA",
+    };
+    const DOW_IDX = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+    const ORD_MAP = { "1st": 1, "first": 1, "2nd": 2, "second": 2, "3rd": 3, "third": 3, "4th": 4, "fourth": 4, "last": -1 };
     const DOW_ALIASES = {
       su: "sunday",
       sun: "sunday",
@@ -1973,19 +1973,19 @@ const ORD_MAP = { "1st": 1, "first": 1, "2nd": 2, "second": 2, "3rd": 3, "third"
       thursday: "thursday",
       fr: "friday",
       fri: "friday",
-  friday: "friday",
-  sa: "saturday",
-  sat: "saturday",
-  saturday: "saturday",
-};
-const DOW_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+      friday: "friday",
+      sa: "saturday",
+      sat: "saturday",
+      saturday: "saturday",
+    };
+    const DOW_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
 
-function ordFromText(value) {
-  if (!value) return null;
-  const numeric = Number(value.replace(/(st|nd|rd|th)$/i, ""));
-  if (!Number.isNaN(numeric) && numeric >= 1 && numeric <= 31) return numeric;
-  return ORD_MAP[value.toLowerCase()] ?? null;
-}
+    function ordFromText(value) {
+      if (!value) return null;
+      const numeric = Number(value.replace(/(st|nd|rd|th)$/i, ""));
+      if (!Number.isNaN(numeric) && numeric >= 1 && numeric <= 31) return numeric;
+      return ORD_MAP[value.toLowerCase()] ?? null;
+    }
     const MONTH_MAP = {
       january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
       july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
@@ -2045,10 +2045,13 @@ function ordFromText(value) {
     function parseRuleText(s) {
       if (!s) return null;
       const t = s.trim().replace(/\s+/g, " ").toLowerCase();
-      const quickSet = parseAbbrevSet(t);
-      if (quickSet) return { kind: "WEEKLY", interval: 1, byDay: quickSet };
-      const looseDays = normalizeByDayList(t);
-      if (looseDays.length) return { kind: "WEEKLY", interval: 1, byDay: looseDays };
+      const ordinalHint = /\b(first|second|third|fourth|fifth|last|day|month)\b/.test(t) || /\d/.test(t);
+      if (!ordinalHint) {
+        const quickSet = parseAbbrevSet(t);
+        if (quickSet) return { kind: "WEEKLY", interval: 1, byDay: quickSet };
+        const looseDays = normalizeByDayList(t);
+        if (looseDays.length) return { kind: "WEEKLY", interval: 1, byDay: looseDays };
+      }
 
       // 0) Simple daily & weekday/weekend anchors
       if (t === "daily" || t === "every day") return { kind: "DAILY", interval: 1 };
@@ -2294,15 +2297,20 @@ function ordFromText(value) {
       return cand;
     }
     function nextMonthOnNthDow(base, nthText, dowCode) {
-      const nthMap = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, last: -1 };
-      const nth = nthMap[nthText];
-      const y = base.getFullYear();
-      const m = base.getMonth() + 1;
-      if (nth === -1) {
-        const last = new Date(y, m + 1, 0, 12, 0, 0, 0);
-        return lastDowOnOrBefore(last, dowCode);
+      const nthValue = ordFromText(nthText);
+      if (nthValue == null) return null;
+      let year = base.getFullYear();
+      let month = base.getMonth();
+      let candidate = computeNthDowForMonth(year, month, nthValue, dowCode);
+      if (!candidate || candidate <= base) {
+        month += 1;
+        if (month > 11) {
+          month = 0;
+          year += 1;
+        }
+        candidate = computeNthDowForMonth(year, month, nthValue, dowCode);
       }
-      return nthDowOfMonth(new Date(y, m, 1, 12, 0, 0, 0), dowCode, nth);
+      return candidate;
     }
 
     function nextMonthLastDay(base) {
@@ -2348,16 +2356,41 @@ function ordFromText(value) {
     }
     function nthDowOfMonth(first, dowCode, nth) {
       const target = DOW_IDX.indexOf(dowCode);
+      if (target < 0) return null;
       let d = new Date(first.getTime());
       while (d.getDay() !== target) d = addDaysLocal(d, 1);
       d = addDaysLocal(d, 7 * (nth - 1));
+      if (d.getMonth() !== first.getMonth()) return null;
       return d;
+    }
+    function nthDowFromEnd(year, monthIndex, dowCode, nthFromEnd) {
+      const target = DOW_IDX.indexOf(dowCode);
+      if (target < 0) return null;
+      let x = new Date(year, monthIndex + 1, 0, 12, 0, 0, 0);
+      let count = 0;
+      while (x.getMonth() === monthIndex) {
+        if (x.getDay() === target) {
+          count += 1;
+          if (count === nthFromEnd) return new Date(x.getTime());
+        }
+        x = addDaysLocal(x, -1);
+      }
+      return null;
     }
     function lastDowOnOrBefore(d, dowCode) {
       const target = DOW_IDX.indexOf(dowCode);
+      if (target < 0) return null;
       let x = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
       while (x.getDay() !== target) x = addDaysLocal(x, -1);
       return x;
+    }
+
+    function computeNthDowForMonth(year, monthIndex, nthValue, dowCode) {
+      if (nthValue == null) return null;
+      if (nthValue > 0) {
+        return nthDowOfMonth(new Date(year, monthIndex, 1, 12, 0, 0, 0), dowCode, nthValue);
+      }
+      return nthDowFromEnd(year, monthIndex, dowCode, Math.abs(nthValue));
     }
 
     // ========================= Date utils & formatting =========================
