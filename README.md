@@ -33,7 +33,7 @@ due:: [[2025-11-07]]
 completed:: [[2025-10-24]]
 ```
 
-Optionally include `start::` (when the task becomes available) and/or `defer::` (when it should resurface). These labels are configurable in settings; defaults are `attrStart_RT` and `attrDefer_RT`.
+Optionally include `start::` (when the task becomes available) and/or `defer::` (when it should resurface). These labels are configurable in settings; defaults are `RT_attrStart` and `RT_attrDefer`.
 
 ### 🔹 Child Block Style
 
@@ -63,6 +63,7 @@ Regardless of how you enter the attributes, the extension emits a compact **pill
 ```
 
 - Pills disappear automatically when you expand the task (so you can edit the child blocks directly) and reappear when the block is collapsed.
+- Marking the TODO complete hides the pill until the extension spawns the next occurrence, keeping finished items visually quiet.
 - Dates within the next 7 days show the weekday name (`Wed`, `Thu`); anything further out shows a short date (`Feb 26`), so you can scan upcoming items quickly.
 - **↻ Repeat pill** — Click to edit; **Alt+Click** copies the rule to the clipboard.
 - **⏱ Start / ⏳ Defer / 📅 Next** — Click to open the corresponding Daily Note Page.  
@@ -90,10 +91,10 @@ Label for a child block attribute for the recurrence pattern
 Label for a child block attribute for due date
 
 ### Start attribute name
-Label for the optional “start/available on” date attribute (default `attrStart_RT`)
+Label for the optional “start/available on” date attribute (default `RT_attrStart`)
 
 ### Defer attribute name
-Label for the optional “defer/snooze until” date attribute (default `attrDefer_RT`)
+Label for the optional “defer/snooze until” date attribute (default `RT_attrDefer`)
 
 ### Confirm Before Spawning Next Task
 If enabled, shows a confirmation dialog (“Spawn next occurrence?”) when you complete a recurring TODO.
