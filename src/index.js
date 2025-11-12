@@ -203,7 +203,7 @@ export default {
       callback: (e) => convertTODO(e),
     });
     extensionAPI.ui.commandPalette.addCommand({
-      label: "Create a Recurring TODO",
+      label: "Create a Better Task",
       callback: () => createRecurringTODO(),
     });
 
@@ -681,7 +681,7 @@ export default {
       iziToast.show({
         theme: "light",
         color: "black",
-        class: "recTasks",
+        class: "betterTasks",
         position: "center",
         timeout: 5000,
         close: true,
@@ -2345,7 +2345,7 @@ export default {
       iziToast.show({
         theme: "light",
         color: "black",
-        class: "recTasks",
+        class: "betterTasks",
         position: "center",
         message,
         timeout: 5000,
@@ -3299,7 +3299,7 @@ export default {
           theme: 'light',
           color: 'black',
           layout: 2,
-          class: 'recTasks',
+          class: 'betterTasks',
           drag: false,
           timeout: false,
           close: true,
@@ -3330,7 +3330,7 @@ export default {
           const style = document.createElement("style");
           style.id = "rt-toast-style";
           style.textContent = `
-            .iziToast.recTasks .iziToast-body {
+            .iziToast.betterTasks .iziToast-body {
               display: flex;
               align-items: center;
             }
@@ -3345,7 +3345,7 @@ export default {
         theme: 'light',
         color: 'black',
         message: msg,
-        class: 'recTasks',
+        class: 'betterTasks',
         position: 'center',
         close: false,
         timeout: 3000,
@@ -3401,7 +3401,7 @@ export default {
           theme: "light",
           color: "black",
           layout: 2,
-          class: "recTasks2",
+          class: "betterTasks2",
           position: "center",
           drag: false,
           timeout: false,
@@ -3476,7 +3476,7 @@ export default {
           theme: "light",
           color: "black",
           layout: 2,
-          class: "recTasks2",
+          class: "betterTasks2",
           position: "center",
           drag: false,
           timeout: false,
@@ -3684,7 +3684,7 @@ export default {
           theme: "light",
           color: "black",
           layout: 2,
-          class: "recTasks2",
+          class: "betterTasks2",
           position: "center",
           drag: false,
           timeout: false,
@@ -3896,7 +3896,7 @@ export default {
           theme: "light",
           color: "black",
           layout: 2,
-          class: "recTasks",
+          class: "betterTasks",
           position: "center",
           drag: false,
           timeout: false,
@@ -4680,7 +4680,7 @@ export default {
       iziToast.show({
         theme: "light",
         color: "black",
-        class: "recTasks",
+        class: "betterTasks",
         overlay: true,
         timeout: false,
         close: true,
@@ -4980,7 +4980,7 @@ export default {
       iziToast.show({
         theme: "light",
         color: "black",
-        class: "recTasks",
+        class: "betterTasks",
         overlay: true,
         timeout: false,
         close: true,

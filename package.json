@@ -1,19 +1,19 @@
 {
-  "name": "recurring-tasks",
+  "name": "better-tasks",
   "version": "1.0.0",
-  "description": "Implement recurring tasks/TODOs in Roam Research",
+  "description": "Implement task management within Roam Research, including dated and recurring tasks.",
   "main": "index.js",
   "scripts": {
     "build": "webpack"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mlava/recurring-tasks.git"
+    "url": "git+https://github.com/mlava/better-tasks.git"
   },
   "bugs": {
-    "url": "https://github.com/mlava/recurring-tasks/issues"
+    "url": "https://github.com/mlava/better-tasks/issues"
   },
-  "homepage": "https://github.com/mlava/recurring-tasks#readme",
+  "homepage": "https://github.com/mlava/better-tasks#readme",
   "author": "Mark Lavercombe",
   "license": "ISC",
   "devDependencies": {
