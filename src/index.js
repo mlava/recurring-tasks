@@ -1,18 +1,20 @@
 import iziToast from "izitoast";
 
-const DEFAULT_REPEAT_ATTR = "RT_attrRepeat";
-const DEFAULT_START_ATTR = "RT_attrStart";
-const DEFAULT_DEFER_ATTR = "RT_attrDefer";
-const DEFAULT_DUE_ATTR = "RT_attrDue";
-const ADVANCE_ATTR = "RT_attrAdvance";
+const DEFAULT_REPEAT_ATTR = "BT_attrRepeat";
+const DEFAULT_START_ATTR = "BT_attrStart";
+const DEFAULT_DEFER_ATTR = "BT_attrDefer";
+const DEFAULT_DUE_ATTR = "BT_attrDue";
+const DEFAULT_COMPLETED_ATTR = "BT_attrCompleted";
+const ADVANCE_ATTR = "BT_attrAdvance";
 const INSTALL_TOAST_KEY = "rt-intro-toast";
 const START_ICON = "⏱";
 const DEFER_ICON = "⏳";
 const DUE_ICON = "📅";
 const WEEK_START_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const PARENT_WRITE_DELAY_MS = 120;
+const TOAST_HIDE_DELAY_MS = 120;
 
 let lastAttrNames = null;
-let latestHelpers = null;
 
 const DOW_MAP = {
   sunday: "SU",
@@ -75,7 +77,7 @@ const MONTH_KEYWORD_INTERVAL_LOOKUP = {
 export default {
   onload: ({ extensionAPI }) => {
     const config = {
-      tabTitle: "Recurring Tasks",
+      tabTitle: "Better Tasks",
       settings: [
         {
           id: "rt-destination",
@@ -114,9 +116,15 @@ export default {
           action: { type: "input", placeholder: DEFAULT_DUE_ATTR, onChange: handleAttributeNameChange },
         },
         {
+          id: "rt-completed-attr",
+          name: "Completed attribute name",
+          description: "Label written when a recurring/scheduled task is completed",
+          action: { type: "input", placeholder: DEFAULT_COMPLETED_ATTR, onChange: handleAttributeNameChange },
+        },
+        {
           id: "rt-confirm",
           name: "Confirm before spawning next task",
-          description: "Ask for confirmation before spawning when a recurring task is completed",
+          description: "Ask for confirmation before spawning when a repeating Better Task is completed",
           action: { type: "switch" },
         },
         {
@@ -133,7 +141,7 @@ export default {
     const introSeen = extensionAPI.settings.get(INSTALL_TOAST_KEY);
     if (!introSeen) {
       toast(
-        "This extension automatically recognises {{[[TODO]]}} tasks in your graph and uses attributes to determine a recurrence pattern and due date. By default, it uses 'RT_attrRepeat' and 'RT_attrDue' as those attributes. These can be changed in the extension settings.<BR><BR>If you already happen to use 'RT_attrRepeat' and/or 'RT_attrDue' attributes for other functions in your graph, please change the defaults in Roam Depot Settings for this extension BEFORE testing it's functionality to avoid any unexpected behaviour."
+        "This extension automatically recognises {{[[TODO]]}} tasks in your graph and uses attributes to determine a recurrence pattern and due date. By default, it uses 'BT_attrRepeat' and 'BT_attrDue' as those attributes. These can be changed in the extension settings.<BR><BR>If you already happen to use 'BT_attrRepeat' and/or 'BT_attrDue' attributes for other functions in your graph, please change the defaults in Roam Depot Settings for this extension BEFORE testing it's functionality to avoid any unexpected behaviour."
       );
       extensionAPI.settings.set(INSTALL_TOAST_KEY, "1");
     }
@@ -187,11 +195,11 @@ export default {
     }
 
     extensionAPI.ui.commandPalette.addCommand({
-      label: "Convert TODO to Recurring Task",
+      label: "Convert TODO to Better Task",
       callback: () => convertTODO(null),
     });
     window.roamAlphaAPI.ui.blockContextMenu.addCommand({
-      label: "Convert TODO to Recurring Task",
+      label: "Convert TODO to Better Task",
       callback: (e) => convertTODO(e),
     });
     extensionAPI.ui.commandPalette.addCommand({
@@ -199,14 +207,14 @@ export default {
       callback: () => createRecurringTODO(),
     });
 
-    // Placeholder for future feature - deconvert recurring tasks TODOs
+    // Placeholder for future feature - deconvert Better Tasks TODOs
     /* 
     extensionAPI.ui.commandPalette.addCommand({
-      label: "Convert Recurring Task to plain TODO",
+      label: "Convert Better Task to plain TODO",
       callback: () => disableRecTODO(null),
     });
     window.roamAlphaAPI.ui.blockContextMenu.addCommand({
-      label: "Convert Recurring Task to plain TODO",
+      label: "Convert Better Task to plain TODO",
       callback: (e) => disableRecTODO(e),
     });
     */
@@ -251,7 +259,7 @@ export default {
         ]),
       ];
       const baseWithoutAttrs = removeInlineAttributes(fstring, removalKeys);
-      const initialTaskText = baseWithoutAttrs.replace(/^\{\{\[\[(?:TODO|DONE)\]\]\}\}\s*/i, "").trim();
+      const initialTaskText = baseWithoutAttrs.trim();
 
       const promptResult = await promptForRepeatAndDue({
         includeTaskText: true,
@@ -265,12 +273,9 @@ export default {
       if (!promptResult) return;
 
       const set = S(attrNames);
-      const normalizedRepeat = normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat;
-      if (!normalizedRepeat) {
-        toast("Repeat rule is required.");
-        return;
-      }
-      if (!parseRuleText(normalizedRepeat, set)) {
+      const normalizedRepeat =
+        promptResult.repeat ? normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat : "";
+      if (normalizedRepeat && !parseRuleText(normalizedRepeat, set)) {
         toast("Unable to understand that repeat rule.");
         return;
       }
@@ -324,33 +329,37 @@ export default {
         deferStr = formatDate(deferDate, set);
       }
 
-      const cleanedTaskText = removeInlineAttributes(
-        (typeof promptResult.taskText === "string" && promptResult.taskText
+      const taskSource =
+        typeof promptResult.taskText === "string" && promptResult.taskText
           ? promptResult.taskText
-          : initialTaskText) || "",
-        removalKeys
-      ).trim();
+          : typeof promptResult.taskTextRaw === "string" && promptResult.taskTextRaw
+            ? promptResult.taskTextRaw
+            : initialTaskText;
+      const cleanedTaskText = removeInlineAttributes(taskSource || "", removalKeys).trim();
       const todoString = normalizeToTodoMacro(cleanedTaskText);
       if (todoString !== fstring) {
         await updateBlockString(fuid, todoString);
+      }
+
+      const hasRepeat = !!normalizedRepeat;
+      const hasTimingInput = !!(dueStr || startStr || deferStr);
+      if (!hasRepeat && !hasTimingInput) {
+        toast("Add a repeat rule or at least one start/defer/due date.");
+        return;
       }
 
       const rtProps = { ...(props.rt || {}) };
       if (!rtProps.id) rtProps.id = shortId();
       if (!rtProps.tz) rtProps.tz = set.timezone;
 
-      const propsPatch = { repeat: normalizedRepeat, rt: rtProps };
-      if (dueStr) propsPatch.due = dueStr;
-      else propsPatch.due = undefined;
-      if (startStr) propsPatch.start = startStr;
-      else propsPatch.start = undefined;
-      if (deferStr) propsPatch.defer = deferStr;
-      else propsPatch.defer = undefined;
-
-      await updateBlockProps(fuid, propsPatch);
+      await updateBlockProps(fuid, { rt: rtProps });
 
       const attrNamesForWrite = set.attrNames;
-      await ensureChildAttrForType(fuid, "repeat", normalizedRepeat, attrNamesForWrite);
+      if (hasRepeat) {
+        await ensureChildAttrForType(fuid, "repeat", normalizedRepeat, attrNamesForWrite);
+      } else {
+        await removeChildAttrsForType(fuid, "repeat", attrNamesForWrite);
+      }
       if (dueStr) {
         await ensureChildAttrForType(fuid, "due", dueStr, attrNamesForWrite);
       } else {
@@ -368,7 +377,7 @@ export default {
       }
 
       repeatOverrides.delete(fuid);
-      toast("Created recurring TODO");
+      toast(hasRepeat ? "Created recurring TODO" : "Created scheduled TODO");
       scheduleSurfaceSync(set.attributeSurface);
     }
 
@@ -420,12 +429,9 @@ export default {
       if (!promptResult) return;
 
       const set = S(attrNames);
-      const normalizedRepeat = normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat;
-      if (!normalizedRepeat) {
-        toast("Repeat rule is required.");
-        return;
-      }
-      if (!parseRuleText(normalizedRepeat, set)) {
+      const normalizedRepeat =
+        promptResult.repeat ? normalizeRepeatRuleText(promptResult.repeat) || promptResult.repeat : "";
+      if (normalizedRepeat && !parseRuleText(normalizedRepeat, set)) {
         toast("Unable to understand that repeat rule.");
         return;
       }
@@ -479,10 +485,19 @@ export default {
         deferStr = formatDate(deferDate, set);
       }
 
+      const hasRepeat = !!normalizedRepeat;
+      const hasTimingInput = !!(dueStr || startStr || deferStr);
+      if (!hasRepeat && !hasTimingInput) {
+        toast("Add a repeat rule or at least one start/defer/due date.");
+        return;
+      }
+
       const taskTextInput =
         typeof promptResult.taskText === "string" && promptResult.taskText
           ? promptResult.taskText
-          : initialTaskText;
+          : typeof promptResult.taskTextRaw === "string" && promptResult.taskTextRaw
+            ? promptResult.taskTextRaw
+            : initialTaskText;
       const cleanedTaskText = removeInlineAttributes(taskTextInput || "", removalKeys).trim();
       const todoString = normalizeToTodoMacro(cleanedTaskText);
       if (todoString !== (block.string || "")) {
@@ -493,17 +508,10 @@ export default {
       if (!rtProps.id) rtProps.id = shortId();
       if (!rtProps.tz) rtProps.tz = set.timezone;
 
-      const propsPatch = { repeat: normalizedRepeat, rt: rtProps };
-      if (dueStr) propsPatch.due = dueStr;
-      else propsPatch.due = undefined;
-      if (startStr) propsPatch.start = startStr;
-      else propsPatch.start = undefined;
-      if (deferStr) propsPatch.defer = deferStr;
-      else propsPatch.defer = undefined;
+      await updateBlockProps(fuid, { rt: rtProps });
 
-      await updateBlockProps(fuid, propsPatch);
-
-      await ensureChildAttrForType(fuid, "repeat", normalizedRepeat, set.attrNames);
+      if (hasRepeat) await ensureChildAttrForType(fuid, "repeat", normalizedRepeat, set.attrNames);
+      else await removeChildAttrsForType(fuid, "repeat", set.attrNames);
       if (dueStr) await ensureChildAttrForType(fuid, "due", dueStr, set.attrNames);
       else await removeChildAttrsForType(fuid, "due", set.attrNames);
       if (startStr) await ensureChildAttrForType(fuid, "start", startStr, set.attrNames);
@@ -512,7 +520,7 @@ export default {
       else await removeChildAttrsForType(fuid, "defer", set.attrNames);
 
       repeatOverrides.delete(fuid);
-      toast("Created your recurring TODO");
+      toast(hasRepeat ? "Created your recurring TODO" : "Created your scheduled TODO");
       scheduleSurfaceSync(set.attributeSurface);
     }
 
@@ -794,17 +802,6 @@ export default {
               : undefined;
         const restoreDueDate = restoreDueStr ? parseRoamDate(restoreDueStr) || previousDueDate : previousDueDate;
 
-        const propsPatch = {};
-        if (normalizedRepeat !== undefined) {
-          propsPatch.repeat = normalizedRepeat;
-        }
-        if (restoreDueStr !== undefined) {
-          propsPatch.due = restoreDueStr;
-        }
-        if (Object.keys(propsPatch).length) {
-          await updateBlockProps(uid, propsPatch);
-        }
-
         const overridePatch = {};
         if (normalizedRepeat) overridePatch.repeat = normalizedRepeat;
         if (restoreDueStr !== undefined) {
@@ -937,7 +934,7 @@ export default {
         null
       );
     }
-    const childEditDebounce = new Map(); // parentUid -> timer
+    const childEditDebounce = new Map();
     let observer = null;
     let observerReinitTimer = null;
     let lastSweep = 0;
@@ -949,9 +946,8 @@ export default {
     initiateObserver();
     window.addEventListener("hashchange", handleHashChange);
 
-    latestHelpers = {
-      getAttrSurface: () => lastAttrSurface || enforceChildAttrSurface(extensionAPI),
-    };
+    delete window.roamAlphaAPI?.__rtWrapped;
+
     void migrateLegacyPropsToChildAttrs();
 
     // === Child -> Props sync listeners (only used when attribute surface is "Child")
@@ -1202,14 +1198,46 @@ export default {
                 }
 
                 const meta = await readRecurringMeta(block, set);
-                if (!meta.repeat) {
+                const hasTimingOnly = !!meta?.hasTimingAttrs;
+                if (!meta.repeat && !hasTimingOnly) {
                   processedMap.delete(uid);
-                  continue; // Not a recurring task
+                  continue; // Not a scheduled task
                 }
 
                 const now = Date.now();
                 if (meta.processedTs && now - meta.processedTs < 4000) {
                   processedMap.delete(uid);
+                  continue;
+                }
+
+                const isOneOff = !meta.repeat && hasTimingOnly;
+                if (isOneOff) {
+                  const snapshot = captureBlockSnapshot(block);
+                  try {
+                    const completion = await markCompleted(block, meta, set);
+                    processedMap.set(uid, completion.processedAt);
+                    const anchor =
+                      pickPlacementDate({ start: meta.start, defer: meta.defer, due: meta.due }) ||
+                      meta.due ||
+                      null;
+                    registerUndoAction({
+                      blockUid: uid,
+                      snapshot,
+                      completion,
+                      newBlockUid: null,
+                      nextDue: meta.due || null,
+                      nextAnchor: anchor,
+                      set,
+                      overrideEntry: null,
+                      toastMessage: "Task completion recorded",
+                    });
+                    repeatOverrides.delete(uid);
+                    void syncPillsForSurface(lastAttrSurface);
+                  } catch (err) {
+                    console.error("[RecurringTasks] one-off completion failed", err);
+                    await revertBlockCompletion(block);
+                    processedMap.delete(uid);
+                  }
                   continue;
                 }
 
@@ -1348,8 +1376,42 @@ export default {
       };
     }
 
+    function syncActiveTextarea(uid, string) {
+      const active = typeof document !== "undefined" ? document.activeElement : null;
+      if (!active || typeof string !== "string") return false;
+      const host = active.closest?.(".rm-block-main");
+      if (!host) return false;
+      const hostUid = host.getAttribute("data-uid");
+      if (hostUid !== uid) return false;
+      if (typeof active.value === "string" && active.value !== string) {
+        active.value = string;
+        active.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return true;
+    }
+
     async function updateBlockString(uid, string) {
-      return window.roamAlphaAPI.updateBlock({ block: { uid, string } });
+      if (PARENT_WRITE_DELAY_MS > 0) {
+        await delay(PARENT_WRITE_DELAY_MS);
+      }
+      const result = await window.roamAlphaAPI.updateBlock({ block: { uid, string } });
+      try {
+        if (typeof string === "string") {
+          const synced = syncActiveTextarea(uid, string);
+          if (!synced) {
+            const blockMain = document.querySelector(`.rm-block-main[data-uid="${uid}"]`);
+            const textarea =
+              blockMain?.querySelector?.("textarea.rm-block-input") ||
+              blockMain?.querySelector?.("textarea.rm-block__input") ||
+              document.querySelector(`textarea.rm-block-input[data-roamjs-block-uid="${uid}"]`);
+            if (textarea && textarea.value !== string) {
+              textarea.value = string;
+              textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          }
+        }
+      } catch (_) {}
+      return result;
     }
 
     async function updateBlockProps(uid, merge) {
@@ -1366,6 +1428,8 @@ export default {
           attrStartLabel: attrSnapshot.startAttr,
           attrDefer: attrSnapshot.deferAttr,
           attrDeferLabel: attrSnapshot.deferAttr,
+          attrCompleted: attrSnapshot.completedAttr,
+          attrCompletedLabel: attrSnapshot.completedAttr,
         };
       }
       const current = await window.roamAlphaAPI.q(
@@ -1388,7 +1452,12 @@ export default {
     }
 
     async function setBlockProps(uid, propsObject) {
-      return window.roamAlphaAPI.updateBlock({ block: { uid, props: propsObject || {} } });
+      const nextProps = propsObject && typeof propsObject === "object" ? { ...propsObject } : {};
+      if (nextProps.repeat !== undefined) delete nextProps.repeat;
+      if (nextProps.due !== undefined) delete nextProps.due;
+      if (nextProps.start !== undefined) delete nextProps.start;
+      if (nextProps.defer !== undefined) delete nextProps.defer;
+      return window.roamAlphaAPI.updateBlock({ block: { uid, props: nextProps } });
     }
 
     function delay(ms) {
@@ -1488,6 +1557,26 @@ export default {
       const allowPropsDue = propsDueMatches || hasCustomDueSignal;
       const allowPropsStart = propsStartMatches || hasCustomStartSignal || hasCanonicalStartSignal;
       const allowPropsDefer = propsDeferMatches || hasCustomDeferSignal || hasCanonicalDeferSignal;
+
+      const startSignals = [
+        startChild?.value,
+        inlineStart,
+        allowPropsStart ? props.start : null,
+      ];
+      const deferSignals = [
+        deferChild?.value,
+        inlineDefer,
+        allowPropsDefer ? props.defer : null,
+      ];
+      const dueSignals = [
+        dueChild?.value,
+        inlineDue,
+        allowPropsDue ? props.due : null,
+      ];
+      const hasTimingSignal =
+        startSignals.some((value) => !!value) ||
+        deferSignals.some((value) => !!value) ||
+        dueSignals.some((value) => !!value);
 
       let repeatText = null;
       let dueDate = null;
@@ -1589,6 +1678,11 @@ export default {
         dueDate = overrideEntry.due;
       }
 
+      const hasTimingValue = !!(startDate || deferDate || dueDate);
+      const hasRepeat = !!repeatText;
+      const hasTimingAttrs = hasTimingSignal || hasTimingValue;
+      const isOneOff = !hasRepeat && hasTimingAttrs;
+
       const advanceEntry = childAttrMap[ADVANCE_ATTR.toLowerCase()];
       const advanceFrom = normalizeAdvanceValue(advanceEntry?.value) || null;
 
@@ -1605,6 +1699,10 @@ export default {
         pageUid: block.page?.uid || null,
         props,
         advanceFrom,
+        hasRepeat,
+        hasTimingAttrs,
+        isRecurring: hasRepeat,
+        isOneOff,
       };
     }
 
@@ -1724,6 +1822,8 @@ export default {
             out.start = value;
           } else if (key === attrNames.deferKey && out.defer == null) {
             out.defer = value;
+          } else if (key === attrNames.completedKey && out.completed == null) {
+            out.completed = value;
           }
         }
       }
@@ -1754,6 +1854,8 @@ export default {
             out.start = out[key];
           } else if (key === attrNames.deferKey && out.defer == null) {
             out.defer = out[key];
+          } else if (key === attrNames.completedKey && out.completed == null) {
+            out.completed = out[key];
           }
         }
       }
@@ -1829,7 +1931,8 @@ export default {
       const due = buildAttrConfig("rt-due-attr", DEFAULT_DUE_ATTR);
       const start = buildAttrConfig("rt-start-attr", DEFAULT_START_ATTR);
       const defer = buildAttrConfig("rt-defer-attr", DEFAULT_DEFER_ATTR);
-      const attrByType = { repeat, due, start, defer };
+      const completed = buildAttrConfig("rt-completed-attr", DEFAULT_COMPLETED_ATTR);
+      const attrByType = { repeat, due, start, defer, completed };
       return {
         repeatAttr: repeat.attr,
         repeatKey: repeat.key,
@@ -1847,6 +1950,10 @@ export default {
         deferKey: defer.key,
         deferAliases: defer.aliases,
         deferRemovalKeys: defer.removalKeys,
+        completedAttr: completed.attr,
+        completedKey: completed.key,
+        completedAliases: completed.aliases,
+        completedRemovalKeys: completed.removalKeys,
         attrByType,
       };
     }
@@ -1896,7 +2003,7 @@ export default {
 
     function buildOrderedChildAttrLabels(attrNames = resolveAttributeNames()) {
       return [
-        { type: "completed", label: "completed" },
+        { type: "completed", label: getAttrLabel("completed", attrNames) || "completed" },
         { type: "repeat", label: getAttrLabel("repeat", attrNames) },
         { type: "advance", label: ADVANCE_ATTR },
         { type: "start", label: getAttrLabel("start", attrNames) },
@@ -1974,6 +2081,13 @@ export default {
             key: attrNames.deferKey,
             aliases: attrNames.deferAliases,
             removalKeys: attrNames.deferRemovalKeys,
+          };
+        case "completed":
+          return {
+            attr: attrNames.completedAttr,
+            key: attrNames.completedKey,
+            aliases: attrNames.completedAliases,
+            removalKeys: attrNames.completedRemovalKeys,
           };
         default:
           return null;
@@ -2189,8 +2303,7 @@ export default {
       let stringChanged = false;
       let completedAttrChange = null;
 
-      completedAttrChange = await ensureChildAttr(uid, "completed", completedDate, getChildOrderForType("completed"));
-      await enforceChildAttrOrder(uid, set.attrNames);
+      completedAttrChange = await ensureChildAttrForType(uid, "completed", completedDate, set.attrNames);
       await removeChildAttr(uid, "rt-processed");
 
       await updateBlockProps(uid, {
@@ -2221,12 +2334,14 @@ export default {
     }
 
     function showUndoToast(data) {
-      const { nextAnchor, nextDue, set } = data;
+      const { nextAnchor, nextDue, toastMessage } = data;
       const displaySource = nextAnchor || nextDue;
       const displayDate = displaySource ? formatRoamDateTitle(displaySource) : "";
-      const message = displaySource
-        ? `Next occurrence scheduled for ${displayDate}`
-        : "Next occurrence scheduled";
+      const message = toastMessage
+        ? toastMessage
+        : displaySource
+          ? `Next occurrence scheduled for ${displayDate}`
+          : "Next occurrence scheduled";
       iziToast.show({
         theme: "light",
         color: "black",
@@ -2256,6 +2371,7 @@ export default {
 
     async function performUndo(data) {
       const { blockUid, snapshot, completion, newBlockUid, set, overrideEntry } = data;
+      const attrNames = set?.attrNames || resolveAttributeNames();
       undoRegistry.delete(blockUid);
       try {
         const restoredString = normalizeToTodoMacro(snapshot.string);
@@ -2271,33 +2387,25 @@ export default {
 
       // === NEW: restore repeat/due depending on surface ===
       try {
-        const attrNames = set?.attrNames || resolveAttributeNames();
         const hadRepeatChild = !!snapshot.childAttrs?.["repeat"];
         const hadDueChild = !!snapshot.childAttrs?.["due"];
+        const hadStartChild = !!snapshot.childAttrs?.["start"];
+        const hadDeferChild = !!snapshot.childAttrs?.["defer"];
 
-        // Rebuild the child attributes exactly as they were
-        if (hadRepeatChild) {
-          await ensureChildAttrForType(
-            blockUid,
-            "repeat",
-            snapshot.childAttrs["repeat"].value || "",
-            attrNames
-          );
-        } else {
-          await removeChildAttrsForType(blockUid, "repeat", attrNames);
-        }
-        if (hadDueChild) {
-          await ensureChildAttrForType(
-            blockUid,
-            "due",
-            snapshot.childAttrs["due"].value || "",
-            attrNames
-          );
-        } else {
-          await removeChildAttrsForType(blockUid, "due", attrNames);
-        }
+        const restoreOrRemove = async (type, snapshotEntry) => {
+          if (snapshotEntry) {
+            await ensureChildAttrForType(blockUid, type, snapshotEntry.value || "", attrNames);
+          } else {
+            await removeChildAttrsForType(blockUid, type, attrNames);
+          }
+        };
+
+        await restoreOrRemove("repeat", hadRepeatChild ? snapshot.childAttrs["repeat"] : null);
+        await restoreOrRemove("due", hadDueChild ? snapshot.childAttrs["due"] : null);
+        await restoreOrRemove("start", hadStartChild ? snapshot.childAttrs["start"] : null);
+        await restoreOrRemove("defer", hadDeferChild ? snapshot.childAttrs["defer"] : null);
       } catch (err) {
-        console.warn("[RecurringTasks] undo restore repeat/due failed", err);
+        console.warn("[RecurringTasks] undo restore recurring attrs failed", err);
       }
 
       if (newBlockUid) {
@@ -2308,7 +2416,13 @@ export default {
         }
       }
 
-      await restoreChildAttr(blockUid, "completed", snapshot.childAttrs?.["completed"], completion.childChanges.completed);
+      await restoreChildAttr(
+        blockUid,
+        "completed",
+        snapshot.childAttrs?.["completed"],
+        completion.childChanges.completed,
+        attrNames
+      );
       const processedSnapshot = snapshot.childAttrs?.["rt-processed"];
       if (processedSnapshot?.uid) {
         try {
@@ -2329,12 +2443,13 @@ export default {
       void syncPillsForSurface(lastAttrSurface);
     }
 
-    async function restoreChildAttr(blockUid, key, beforeInfo, changeInfo) {
+    async function restoreChildAttr(blockUid, type, beforeInfo, changeInfo, attrNames = resolveAttributeNames()) {
+      const label = getAttrLabel(type, attrNames) || type;
       if (beforeInfo?.uid) {
         const value = beforeInfo.value || "";
         try {
           await window.roamAlphaAPI.updateBlock({
-            block: { uid: beforeInfo.uid, string: `${key}:: ${value}` },
+            block: { uid: beforeInfo.uid, string: `${label}:: ${value}` },
           });
         } catch (err) {
           console.warn("[RecurringTasks] restore child attr failed", err);
@@ -2347,6 +2462,8 @@ export default {
         } catch (err) {
           console.warn("[RecurringTasks] remove child attr failed", err);
         }
+      } else {
+        await removeChildAttr(blockUid, label);
       }
     }
 
@@ -3187,7 +3304,7 @@ export default {
           timeout: false,
           close: true,
           overlay: true,
-          title: "Recurring Tasks",
+          title: "Better Tasks",
           message: "Spawn next occurrence?",
           position: 'center',
           buttons: [
@@ -3493,7 +3610,7 @@ export default {
         const taskInputHtml = `<label class="rt-input-wrap">Task *<br/><input data-rt-field="task" type="text" placeholder="Task text" value="${escapeHtml(
           snapshot.task || ""
         )}" /></label>`;
-        const repeatInputHtml = `<label class="rt-input-wrap">Repeat *<br/><input data-rt-field="repeat" type="text" placeholder="Repeat rule (required)" value="${escapeHtml(
+        const repeatInputHtml = `<label class="rt-input-wrap">Repeat<br/><input data-rt-field="repeat" type="text" placeholder="Repeat rule (optional)" value="${escapeHtml(
           snapshot.repeat || ""
         )}" /></label>`;
         const dateInputClass = `rt-date-input-${Date.now()}`;
@@ -3514,8 +3631,8 @@ export default {
           defer: 'input[data-rt-field="defer"]',
         };
         const promptMessage = includeTaskText
-          ? "Enter the task text, repeat rule, and optional dates."
-          : "Enter the repeat rule and optional dates.";
+          ? "Enter the task text, and the optional repeat rule and dates."
+          : "Enter an optional repeat rule and dates.";
         const inputs = [];
         if (includeTaskText) {
           inputs.push([
@@ -3574,33 +3691,58 @@ export default {
           close: true,
           closeOnEscape: true,
           overlay: true,
-          title: "Recurring Tasks",
+          title: "Better Tasks",
           icon: "",
           iconText: "✓",
           message: promptMessage,
           inputs,
           buttons: [
             [
-              "<button>Save</button>",
-              (instance, toastEl) => {
-                const getFieldValue = (name) =>
-                  toastEl?.querySelector(fieldSelectors[name])?.value?.trim() || "";
-                const taskValue = includeTaskText ? getFieldValue("task") : "";
+              "<button type=\"button\">Save</button>",
+              async (instance, toastEl, _btn, _event, inputsArray) => {
+                const getFieldValue = (name) => {
+                  const el = toastEl?.querySelector(fieldSelectors[name]);
+                  const domVal = typeof el?.value === "string" ? el.value : "";
+                  if (domVal && domVal.trim()) return domVal.trim();
+                  if (Array.isArray(inputsArray)) {
+                    const indexMap = includeTaskText
+                      ? { task: 0, repeat: 1, start: 2, defer: 3, due: 4 }
+                      : { repeat: 0, start: 1, defer: 2, due: 3 };
+                    const idx = indexMap[name];
+                    if (idx != null && inputsArray[idx]?.value) {
+                      const v = String(inputsArray[idx].value).trim();
+                      if (v) return v;
+                    }
+                  }
+                  switch (name) {
+                    case "task":
+                      return (snapshot.task || "").trim();
+                    case "repeat":
+                      return (snapshot.repeat || "").trim();
+                    case "start":
+                      return snapshot.startIso || "";
+                    case "defer":
+                      return snapshot.deferIso || "";
+                    case "due":
+                      return snapshot.dueIso || "";
+                    default:
+                      return "";
+                  }
+                };
+                const taskValueRaw = includeTaskText ? getFieldValue("task") : "";
+                if (includeTaskText) snapshot.task = taskValueRaw;
+                const taskValue = taskValueRaw.trim();
                 if (includeTaskText && !taskValue) {
                   toast("Task text is required.");
                   toastEl?.querySelector(fieldSelectors.task)?.focus?.();
                   return;
                 }
                 const repeatValue = getFieldValue("repeat");
-                if (!repeatValue) {
-                  toast("Repeat rule is required.");
-                  toastEl?.querySelector(fieldSelectors.repeat)?.focus?.();
-                  return;
-                }
                 const dueIso = getFieldValue("due");
                 const startIso = getFieldValue("start");
                 const deferIso = getFieldValue("defer");
-                const normalizedRepeat = normalizeRepeatRuleText(repeatValue) || repeatValue;
+                const normalizedRepeat =
+                  repeatValue ? normalizeRepeatRuleText(repeatValue) || repeatValue : "";
                 let dueText = null;
                 let dueDate = null;
                 if (dueIso) {
@@ -3634,9 +3776,10 @@ export default {
                   }
                   deferText = deferIso;
                 }
+                await delay(TOAST_HIDE_DELAY_MS);
                 instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
                 finish({
-                  repeat: normalizedRepeat,
+                  repeat: normalizedRepeat || "",
                   repeatRaw: repeatValue,
                   due: dueText,
                   dueDate,
@@ -3645,12 +3788,13 @@ export default {
                   defer: deferText,
                   deferDate,
                   taskText: includeTaskText ? taskValue : undefined,
+                  taskTextRaw: includeTaskText ? taskValueRaw : undefined,
                 });
               },
               true,
             ],
             [
-              "<button>Cancel</button>",
+              "<button type=\"button\">Cancel</button>",
               (instance, toastEl) => {
                 instance.hide({ transitionOut: "fadeOut" }, toastEl, "button");
                 finish(null);
@@ -3683,6 +3827,28 @@ export default {
               if (attempts < 5) requestAnimationFrame(tryFocus);
             };
             requestAnimationFrame(tryFocus);
+
+            const handleArrowToPicker = (event) => {
+              if (event.key !== "ArrowDown") return;
+              const input = event.currentTarget;
+              if (!input) return;
+              event.preventDefault();
+              if (typeof input.showPicker === "function") {
+                try {
+                  input.showPicker();
+                  return;
+                } catch (_) { }
+              }
+              try {
+                input.focus();
+                input.click();
+              } catch (_) { }
+            };
+            for (const key of ["start", "defer", "due"]) {
+              toastEl.querySelectorAll(fieldSelectors[key])?.forEach((input) => {
+                input.addEventListener("keydown", handleArrowToPicker);
+              });
+            }
           },
           onClosed: () => finish(null),
         });
@@ -3696,7 +3862,7 @@ export default {
       if (!choice) {
         await revertBlockCompletion(block);
         if (checkbox) checkbox.checked = false;
-        toast("Recurring task completion cancelled.");
+        toast("Better Task completion cancelled.");
         return null;
       }
       await ensureAdvanceChildAttr(uid, choice, meta, set.attrNames);
@@ -3980,7 +4146,9 @@ export default {
 
           const originalString = block.string;
           const meta = await readRecurringMeta(block, set);
-          if (!meta.repeat) {
+          const hasTiming = !!meta.hasTimingAttrs;
+          const isRecurring = !!meta.repeat;
+          if (!isRecurring && !hasTiming) {
             main.querySelectorAll(".rt-pill-wrap")?.forEach((el) => el.remove());
             continue;
           }
@@ -4034,7 +4202,11 @@ export default {
           if (startDate) tooltipParts.push(`Start: ${formatIsoDate(startDate, set)}`);
           if (deferDate) tooltipParts.push(`Defer: ${formatIsoDate(deferDate, set)}`);
           if (dueDate) tooltipParts.push(`Next: ${formatIsoDate(dueDate, set)}`);
-          const tooltip = tooltipParts.length ? tooltipParts.join(" • ") : "Recurring task";
+          const tooltip = tooltipParts.length
+            ? tooltipParts.join(" • ")
+            : isRecurring
+              ? "Repeating Better Task"
+              : "Scheduled Better Task";
 
           main.querySelectorAll(".rt-pill-wrap")?.forEach((el) => el.remove());
 
@@ -4049,6 +4221,7 @@ export default {
             e.stopPropagation();
           });
 
+          let repeatSpan = null;
           let startSpan = null;
           let deferSpan = null;
           let dueSpan = null;
@@ -4065,7 +4238,7 @@ export default {
             e.stopPropagation();
             const target = e.target;
             if (
-              target === repeatSpan ||
+              (repeatSpan && target === repeatSpan) ||
               (startSpan && target === startSpan) ||
               (deferSpan && target === deferSpan) ||
               (dueSpan && target === dueSpan) ||
@@ -4073,20 +4246,22 @@ export default {
             ) {
               return;
             }
-            showPillMenu({ uid, set });
+            showPillMenu({ uid, set, isRecurring });
           });
 
-          const repeatSpan = document.createElement("span");
-          repeatSpan.className = "rt-pill-repeat";
-          repeatSpan.textContent = `↻ ${humanRepeat}`;
-          repeatSpan.title = `Repeat rule: ${humanRepeat}`;
-          repeatSpan.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            handleRepeatEdit(e, { uid, set, meta, span: repeatSpan });
-          });
+          if (isRecurring && humanRepeat) {
+            repeatSpan = document.createElement("span");
+            repeatSpan.className = "rt-pill-repeat";
+            repeatSpan.textContent = `↻ ${humanRepeat}`;
+            repeatSpan.title = `Repeat rule: ${humanRepeat}`;
+            repeatSpan.addEventListener("click", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleRepeatEdit(e, { uid, set, meta, span: repeatSpan });
+            });
 
-          pill.appendChild(repeatSpan);
+            pill.appendChild(repeatSpan);
+          }
 
           if (startDisplay) {
             const sep = document.createElement("span");
@@ -4146,8 +4321,8 @@ export default {
               icon: DUE_ICON,
               date: dueDate,
               set,
-              label: "Next",
-              tooltip: `Next occurrence: ${formatIsoDate(dueDate, set)}`,
+              label: "Due",
+              tooltip: `Due: ${formatIsoDate(dueDate, set)}`,
             });
             dueSpan.addEventListener("click", (e) => {
               e.preventDefault();
@@ -4160,11 +4335,11 @@ export default {
           const menuBtn = document.createElement("span");
           menuBtn.className = "rt-pill-menu-btn";
           menuBtn.textContent = "⋯";
-          menuBtn.title = "More recurring task actions";
+          menuBtn.title = "More task actions";
           menuBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            showPillMenu({ uid, set });
+            showPillMenu({ uid, set, isRecurring });
           });
           pill.appendChild(menuBtn);
 
@@ -4239,12 +4414,12 @@ export default {
         const dueSpanEl = pill.querySelector(".rt-pill-due");
         if (dueDateToPersist && dueSpanEl) {
           const friendly = formatFriendlyDate(dueDateToPersist, set);
-          const tooltip = `Next occurrence: ${formatIsoDate(dueDateToPersist, set)}`;
+          const tooltip = `Due: ${formatIsoDate(dueDateToPersist, set)}`;
           renderPillDateSpan(dueSpanEl, {
             icon: DUE_ICON,
             date: dueDateToPersist,
             set,
-            label: "Next",
+            label: "Due",
             tooltip,
           });
           pill.title = tooltip;
@@ -4305,6 +4480,10 @@ export default {
       if (!(currentDate instanceof Date) || Number.isNaN(currentDate.getTime())) return;
 
       const label = type === "start" ? "Start" : "Defer";
+      if (event.shiftKey) {
+        await openDatePage(currentDate, { inSidebar: true });
+        return;
+      }
       if (event.altKey || event.metaKey || event.ctrlKey) {
         const existing = formatIsoDate(currentDate, set);
         const nextIso = await promptForDate({
@@ -4350,13 +4529,21 @@ export default {
     async function handleDueClick(event, context) {
       const { uid, set, span } = context;
       const block = await getBlock(uid);
-      if (!block) return;
-      const meta = await readRecurringMeta(block, set);
-      const attrNames = set.attrNames;
-      const contextSnapshot = prepareDueChangeContext(block, meta, set);
-      const due = meta.due;
-      if (!due) return;
-      if (event.altKey || event.metaKey || event.ctrlKey) {
+    if (!block) return;
+    const meta = await readRecurringMeta(block, set);
+    const attrNames = set.attrNames;
+    const contextSnapshot = prepareDueChangeContext(block, meta, set);
+    const due = meta.due;
+    if (!due) return;
+    if (event.altKey && (event.metaKey || event.ctrlKey)) {
+      await snoozeDeferByDays(uid, set, 1);
+      return;
+    }
+    if (event.shiftKey) {
+      await openDatePage(due, { inSidebar: true });
+      return;
+    }
+    if (event.altKey || event.metaKey || event.ctrlKey) {
         const existing = formatIsoDate(due, set);
         const nextIso = await promptForDate({
           title: "Edit Due Date",
@@ -4383,8 +4570,8 @@ export default {
           icon: DUE_ICON,
           date: parsed,
           set,
-          label: "Next",
-          tooltip: `Next occurrence: ${formatIsoDate(parsed, set)}`,
+          label: "Due",
+          tooltip: `Due: ${formatIsoDate(parsed, set)}`,
         });
         const pill = span.closest(".rt-pill");
         if (pill) pill.title = span.title;
@@ -4417,20 +4604,23 @@ export default {
         }
         void syncPillsForSurface(lastAttrSurface);
         return;
-      }
-      if (event.shiftKey) {
-        await snoozeDeferByDays(uid, set, 1);
-        return;
-      }
-      await openDatePage(due);
     }
+    await openDatePage(due);
+  }
 
-    async function openDatePage(date) {
+    async function openDatePage(date, options = {}) {
       if (!(date instanceof Date) || Number.isNaN(date.getTime())) return;
       const dnpTitle = toDnpTitle(date);
       const dnpUid = await getOrCreatePageUid(dnpTitle);
       if (!dnpUid) return;
-      window.roamAlphaAPI.ui.mainWindow.openPage({ page: { uid: dnpUid } });
+      const { inSidebar = false } = options;
+      if (inSidebar) {
+        window.roamAlphaAPI.ui.rightSidebar.addWindow({
+          window: { type: "outline", "page-uid": dnpUid, "block-uid": dnpUid },
+        });
+      } else {
+        window.roamAlphaAPI.ui.mainWindow.openPage({ page: { uid: dnpUid } });
+      }
     }
 
     function ensurePillMenuStyles() {
@@ -4469,17 +4659,22 @@ export default {
       document.head.appendChild(style);
     }
 
-    function showPillMenu({ uid, set }) {
+    function showPillMenu({ uid, set, isRecurring = true }) {
       const menuId = `rt-pill-menu-${uid}-${Date.now()}`;
+      const recurringBlock = isRecurring
+        ? `
+         <button data-action="skip">Skip this occurrence</button>
+         <button data-action="generate">Generate next now</button>
+          <button data-action="end" data-danger="1">End recurrence</button>
+        `
+        : "";
       const html = `
         <div class="rt-pill-menu" id="${menuId}">
           <button data-action="snooze-1">Snooze +1 day</button>
          <button data-action="snooze-3">Snooze +3 days</button>
          <button data-action="snooze-next-mon">Snooze to next Monday</button>
          <button data-action="snooze-pick">Snooze (pick date)</button>
-         <button data-action="skip">Skip this occurrence</button>
-         <button data-action="generate">Generate next now</button>
-          <button data-action="end" data-danger="1">End recurrence</button>
+         ${recurringBlock}
         </div>
       `;
       iziToast.show({
@@ -5070,9 +5265,8 @@ export default {
       }
     }
 
-    window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Convert TODO to Recurring Task" });
-    // window.roamAlphaAPI.ui.blockContextMenu.removeCommand({label: "Convert Recurring Task to plain TODO",});
-    latestHelpers = null;
+    window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Convert TODO to Better Task" });
+    // window.roamAlphaAPI.ui.blockContextMenu.removeCommand({label: "Convert Better Task to plain TODO",});
   },
 };
 

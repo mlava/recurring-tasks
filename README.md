@@ -1,45 +1,47 @@
-# 🌀 Recurring Tasks for Roam Research
+# 🌀 Better Tasks for Roam Research
 
-Bring true recurring task automation to Roam Research!
+Bring true task management to Roam Research!
 
-This extension automatically recognizes and manages TODO items that match defined repeat pattern and due date attributes, generating the next instance when a task is completed.
+This extension automatically recognizes and manages TODO items that match defined repeat pattern and/or date attributes, optionally generating the next instance when a repeating Better Task is completed.
 
 **Note 1:** 
-This extension is in active development and should be considered an early beta release. Please let me know of any bugs or unexpected behaviours in Slack  - https://app.slack.com/client/TNEAEL9QW/
+This extension is in active development and should be considered a beta release. Please let me know of any bugs or unexpected behaviours in Slack  - https://app.slack.com/client/TNEAEL9QW/
 
 **Note 2:** 
-The settings pane for the extension allows you to use whatever name for the repeat and due date atttributes you choose. The extension defaults to using 'RT_attrRepeat' and 'RT_attrDue' for the recurrence pattern and due date respectively. If you happen to already use these attributes for other purposes, the extension will recognise and attempt to use them if you don't set alternatives in the settings. Using 'frequency' and 'when' for example, would prevent the extension from acting on anything for which you already use 'RT_attrRepeat' and 'RT_attrDue'.
+The settings pane for the extension allows you to use whatever name for the repeat and start/defer/due date atttributes you choose. The extension defaults to using 'BT_attrRepeat', 'BT_attrStart', 'BT_attrDefer' and 'BT_attrDue' for the recurrence pattern and start/defer/due dates respectively. If you happen to already use these attributes for other purposes, the extension will recognise and attempt to use them if you don't set alternatives in the settings. Using 'frequency' and 'when' for example, would prevent the extension from acting on anything for which you already use 'BT_attrRepeat' and 'BT_attrDue'.
 
 ---
 
 ## 📘 Quick Overview
 
-You can record a recurring task directly or by using a Command Palette command (Create a Recurring TODO) - both behave identically and all data is saved in child blocks for reliability.
+You can create a Better Task directly or via the Command Palette — both behave identically, store their data in child blocks for reliability, and can include either a repeat rule or just start/defer/due dates for one-off scheduling.
 
 ### 🔹 Child Block Style
 
-If you prefer to keep the task text clean, choose “Child” mode. The repeat and due info will appear as sub-blocks:
-
 ```markdown
 {{[[TODO]]}} Write weekly newsletter
-  - repeat:: every Friday
-  - due:: [[2025-11-07]]
+  - BT_attrRepeat:: every Friday
+  - BT_attrDue:: [[2025-11-07]]
 ```
 
 When completed:
 
 ```markdown
 {{[[DONE]]}} Write weekly newsletter
-  - repeat:: every Friday
-  - due:: [[2025-11-07]]
+  - BT_attrRepeat:: every Friday
+  - BT_attrDue:: [[2025-11-07]]
   - completed:: [[2025-10-31]]
 ```
 
-Optionally include a start attribute `RT_attrStart::` (when the task becomes available) and/or defer attribute `RT_attrDefer::` (when it should resurface). These labels are configurable in settings; defaults are `RT_attrStart` and `RT_attrDefer`.
+Optionally include a start attribute `BT_attrStart::` (when the task becomes available) and/or defer attribute `BT_attrDefer::` (when it should resurface). These labels are configurable in settings; defaults are `BT_attrStart` and `BT_attrDefer`. The completion attribute defaults to `completed::` but can also be configured in Settings.
+
+### 🔹 Scheduled (One-Off) Tasks
+
+Leave the repeat field blank while setting any combination of `start::`, `defer::`, or `due::` to create a *scheduled one-off* task. It uses the same child-block storage, pills, snooze controls, and completion logic — just without spawning a follow-up block. Completing it writes `completed:: [[<today>]]` and hides the pill.
 
 ### 🔹 Inline Pill Indicators
 
-Regardless of how you enter the attributes, the extension emits a compact **pill** next to each recurring TODO whenever its child blocks are collapsed:
+Regardless of how you enter the attributes, the extension emits a compact **pill** next to each Better Task whenever its child blocks are collapsed:
 
 ```
 ☑️ Write weekly newsletter  ↻ every Friday · ⏳ Mon 3 Nov · 📅 Fri 7 Nov ⋯
@@ -47,19 +49,21 @@ Regardless of how you enter the attributes, the extension emits a compact **pill
 
 - Pills disappear automatically when you expand the task (so you can edit the child blocks directly) and reappear when the block is collapsed.
 - Marking the TODO complete hides the pill until the extension spawns the next occurrence, keeping finished items visually quiet.
+- Tasks without a repeat rule still show the pill with their start/defer/due dates, just without the ↻ segment.
 - Dates within the next 7 days show the weekday name (`Wed`, `Thu`); anything further out shows a short date (`Feb 26`), so you can scan upcoming items quickly.
 - **↻ Repeat pill** — Click to edit; **Alt+Click** copies the rule to the clipboard.
 - **⏱ Start / ⏳ Defer / 📅 Next** — Click to open the corresponding Daily Note Page.  
-  **Shift+Click** on the due pill snoozes +1 day.  
+  **Shift+Click** opens that page in the right sidebar (matches Roam).  
+  **Alt+Cmd/Ctrl+Click** on the due pill snoozes +1 day.  
   **Alt/Ctrl/Meta+Click** on any date pill opens a date picker to change that date.
-- **⋯ Menu** — Opens the full recurring-task menu (see below).
+- **⋯ Menu** — Opens the full Better Task menu (see below).
 
 ---
 
 ## ⚙️ Settings
 
 ### Destination for Next Task
-Determines where the next instance of a recurring task appears:
+Determines where the next instance of a Better Task appears:
 - **Daily Notes Page (DNP)** — Default; next occurrence is created on its due date’s DNP.  
 - **Same Page** — Next occurrence appears below the current one.
 - **Under a Heading on DNP** — Adds the new task under the heading you specify (default: “Tasks”).
@@ -71,19 +75,24 @@ Heading for **Under a Heading on DNP**
 Label for a child block attribute for the recurrence pattern
 
 ### Start attribute name
-Label for the optional “start/available on” date attribute (default `RT_attrStart`)
+Label for the optional “start/available on” date attribute (default `BT_attrStart`)
 
 ### Defer attribute name
-Label for the optional “defer/snooze until” date attribute (default `RT_attrDefer`)
+Label for the optional “defer/snooze until” date attribute (default `BT_attrDefer`)
 
 ### Due attribute name
-Label for the optional “due” date attribute (default `RT_attrDue`)
+Label for the optional “due” date attribute (default `BT_attrDue`)
+
+### Completed attribute name
+Label written when the task is marked DONE (default `BT_attrCompleted`).
+
+You can change any of these attributes in Settings. These defaults have been chosen to minimise the risk of unexpected behaviours if you already use start:: defer:: repeat:: due:: or completed:: in your graph for other purposes.
 
 ### Confirm Before Spawning Next Task
-If enabled, shows a confirmation dialog (“Spawn next occurrence?”) when you complete a recurring TODO.
+If enabled, shows a confirmation dialog (“Spawn next occurrence?”) when you complete a repeating Better Task.
 
 ### First day of the week
-Tells Recurring Tasks which weekday your graph treats as the start of the week, and allows you to match your Roam Research preference setting.  
+Tells Better Tasks which weekday your graph treats as the start of the week, and allows you to match your Roam Research preference setting.  
 Weekly rules that span multiple days or intervals (e.g., `every 2 weeks on Sat & Sun`, `Mon-Fri`) interpret ranges using this anchor. Default is **Monday**.
 
 ---
@@ -94,7 +103,7 @@ Each task shows an inline “pill” next to its checkbox when the child blocks 
 
 **Pill actions:**
 - **Repeat pill (↻)** — Click to edit; Alt+Click to copy rule text.
-- **Due pill (Next:)** — Click to open DNP; Shift+Click to snooze 1 day; Alt/Ctrl/Meta+Click to edit due date.
+- **Due pill (Next:)** — Click to open DNP; Shift+Click opens in right sidebar; Alt+Cmd/Ctrl+Click snoozes +1 day; Alt/Ctrl/Meta+Click opens the date picker.
 - **⋯ (menu)** — Opens the task menu with more options:
 
 | Action | Description |
@@ -105,9 +114,9 @@ Each task shows an inline “pill” next to its checkbox when the child blocks 
 | Snooze (pick date) | Choose a custom start date |
 | Skip this occurrence | Jump directly to next repeat cycle |
 | Generate next now | Immediately create the next task |
-| End recurrence | Stop this task from recurring |
+| End recurrence | Stop this task from repeating |
 
-All actions support **Undo** via a toast notification. If a start date isn't configured the buttons snooze the due date instead.
+All actions support **Undo** via a toast notification. If a start date isn't configured the buttons snooze the due date instead. Skip / generate / end only appear for tasks with a repeat rule.
 
 ---
 
@@ -115,10 +124,10 @@ All actions support **Undo** via a toast notification. If a start date isn't con
 
 You can trigger these from Roam’s Command Palette (`Ctrl+P` / `Cmd+P`) or block context menu:
 
-- **Convert TODO to Recurring Task**
-- **Create a Recurring TODO**
+- **Convert TODO to Better Task**
+- **Create a Better Task**
 
-These commands let you turn an existing task into a recurring one or start a new recurring TODO directly.
+These commands let you turn an existing task into a repeating Better Task or start a new scheduled TODO; just leave the repeat field blank to create a one-off with start/defer/due timing.
 
 ---
 ## 📆 Repeat Field Syntax (Current Support)
@@ -246,19 +255,19 @@ The `repeat::` attribute accepts **natural-language** patterns. Parsing is **cas
 
 ## 💡 Tips
 
-- Any TODO with a `repeat::` value automatically becomes a recurring task.
+- Any TODO with a `repeat::` value automatically becomes a repeating Better Task.
 - Completing it will **spawn the next occurrence** (optionally after confirmation).
-- Collapsing a recurring TODO shows its pill; expanding it reveals the underlying child blocks for editing.
+- Collapsing a Better Task shows its pill; expanding it reveals the underlying child blocks for editing.
 - Most actions (skip, snooze, edit) display an **Undo** toast.
 
 ---
 
 ## 🧰 Example Workflow
 
-1. Draft the task (inline or empty block), then run **Convert TODO to Recurring Task** (or simply **Create a Recurring TODO** if you’re starting fresh). The toast lets you enter the title, repeat rule, and optional start/defer/due dates; it stores the canonical data in child blocks and shows the inline pill.
-2. Mark it done — the extension automatically creates the next task on its start date (or due date if no start is provided) so it appears on the right Daily Note or page.
+1. Draft the task (inline or empty block), then run **Convert TODO to Better Task** (or simply **Create a Better Task** if you’re starting fresh). The toast lets you enter the title, optional repeat rule, and optional start/defer/due dates; it stores the canonical data in child blocks and shows the inline pill.
+2. Mark it done — for repeating Better Tasks, the extension automatically creates the next task on its start date (or due date if no start is provided) so it appears on the right Daily Note or page.
 3. If you snooze or skip via the pill menu, the defer/due child blocks update and the pill reflects the new dates immediately.
 
 ---
 
-Enjoy effortless recurring task management directly inside Roam Research!
+Enjoy Better Task management directly inside Roam Research!
