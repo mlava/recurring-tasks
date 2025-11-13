@@ -384,6 +384,11 @@ label.revealIn>input {
     margin-right: 4px;
 }
 
+#bt-dashboard-button.bt-dashboard-button--active {
+    background: #dcf992;
+    border-radius: 6px;
+}
+
 .bt-empty,
 .bt-content-empty {
     padding: 16px;

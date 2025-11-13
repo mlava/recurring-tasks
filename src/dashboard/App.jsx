@@ -113,22 +113,32 @@ function applyFilters(tasks, filters, query) {
   });
 }
 
-function groupTasks(tasks, grouping) {
+function groupTasks(tasks, grouping, options = {}) {
+  const completionFilter = options.completion || [];
+  const completedOnly = completionFilter.length === 1 && completionFilter[0] === "completed";
+  const completedTasks = completedOnly ? tasks.filter((task) => task.isCompleted) : [];
+  const workingTasks = completedOnly ? tasks.filter((task) => !task.isCompleted) : tasks;
   const groups = [];
   if (grouping === "recurrence") {
     for (const key of GROUP_ORDER_RECURRENCE) {
-      const items = tasks.filter((task) => task.recurrenceBucket === key);
+      const items = workingTasks.filter((task) => task.recurrenceBucket === key);
       if (items.length) {
         groups.push({ id: key, title: GROUP_LABELS[key], items });
       }
     }
+    if (completedTasks.length) {
+      groups.unshift({ id: "completed", title: "Completed", items: completedTasks });
+    }
     return groups;
   }
   for (const key of GROUP_ORDER_TIME) {
-    const items = tasks.filter((task) => task.dueBucket === key);
+    const items = workingTasks.filter((task) => task.dueBucket === key);
     if (items.length) {
       groups.push({ id: key, title: GROUP_LABELS[key], items });
     }
+  }
+  if (completedTasks.length) {
+    groups.unshift({ id: "completed", title: "Completed", items: completedTasks });
   }
   return groups;
 }
@@ -206,6 +216,11 @@ function GroupHeader({ title, count, isExpanded, onToggle }) {
 
 function TaskRow({ task, controller }) {
   const checkboxLabel = task.isCompleted ? "Mark as open" : "Mark as done";
+  const contextBits = [];
+  if (task.pageTitle) contextBits.push({ key: "page", text: `In ${task.pageTitle}` });
+  if (task.isCompleted) contextBits.push({ key: "completed", text: "Completed" });
+  else if (task.availabilityLabel) contextBits.push({ key: "availability", text: task.availabilityLabel });
+  const showSnooze = !task.isCompleted;
   return (
     <div className="bt-task-row">
       <button
@@ -232,25 +247,33 @@ function TaskRow({ task, controller }) {
           ))}
         </div>
         <div className="bt-task-row__context">
-          {task.pageTitle ? <span>In {task.pageTitle}</span> : null}
-          {task.availabilityLabel ? <span>{task.availabilityLabel}</span> : null}
+          {contextBits.map((bit, idx) => (
+            <span key={`${task.uid}-${bit.key || idx}`}>{bit.text}</span>
+          ))}
         </div>
       </div>
       <div className="bt-task-row__actions">
-        <button type="button" onClick={() => controller.openBlock(task.uid)}>
-          Open
+        <button
+          type="button"
+          onClick={() =>
+            controller.openBlock(task.uid, { skipCompletionToast: task.isCompleted })
+          }
+        >
+          View
         </button>
-        <div className="bt-task-row__snooze">
-          <button type="button" onClick={() => controller.snoozeTask(task.uid, 1)}>
-            +1d
-          </button>
-          <button type="button" onClick={() => controller.snoozeTask(task.uid, 7)}>
-            +7d
-          </button>
-          <button type="button" onClick={() => controller.snoozeTask(task.uid, "pick")}>
-            Pick
-          </button>
-        </div>
+        {showSnooze ? (
+          <div className="bt-task-row__snooze">
+            <button type="button" onClick={() => controller.snoozeTask(task.uid, 1)}>
+              +1d
+            </button>
+            <button type="button" onClick={() => controller.snoozeTask(task.uid, 7)}>
+              +7d
+            </button>
+            <button type="button" onClick={() => controller.snoozeTask(task.uid, "pick")}>
+              Pick
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -283,7 +306,10 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
     () => applyFilters(snapshot.tasks, filters, query),
     [snapshot.tasks, filters, query]
   );
-  const groups = useMemo(() => groupTasks(filteredTasks, grouping), [filteredTasks, grouping]);
+  const groups = useMemo(
+    () => groupTasks(filteredTasks, grouping, { completion: filters.completion }),
+    [filteredTasks, grouping, filters.completion]
+  );
   useEffect(() => {
     setExpandedGroups((prev) => {
       const next = { ...prev };

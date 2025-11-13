@@ -5443,6 +5443,14 @@ async function setTaskTodoState(uid, state = "TODO") {
         }
       }
 
+      function setTopbarActive(active) {
+        if (typeof document === "undefined") return;
+        const button = document.getElementById(DASHBOARD_TOPBAR_BUTTON_ID);
+        if (!button) return;
+        if (active) button.classList.add("bt-dashboard-button--active");
+        else button.classList.remove("bt-dashboard-button--active");
+      }
+
       function open() {
         ensureContainer();
         root.render(
@@ -5453,6 +5461,7 @@ async function setTaskTodoState(uid, state = "TODO") {
           />
         );
         ensureInitialLoad();
+        setTopbarActive(true);
         if (savedPosition) {
           requestAnimationFrame(() => {
             applySavedPosition();
@@ -5463,6 +5472,7 @@ async function setTaskTodoState(uid, state = "TODO") {
       function close() {
         cleanupDragListeners();
         registerDragHandle(null);
+        setTopbarActive(false);
         if (root) {
           root.unmount();
           root = null;
@@ -5528,8 +5538,12 @@ async function setTaskTodoState(uid, state = "TODO") {
         emit();
       }
 
-      function openBlock(uid) {
+      function openBlock(uid, options = {}) {
         if (!uid) return;
+        if (options.skipCompletionToast) {
+          processedMap.set(uid, Date.now());
+          setTimeout(() => processedMap.delete(uid), 2000);
+        }
         try {
           window.roamAlphaAPI?.ui?.mainWindow?.openBlock?.({ block: { uid } });
         } catch (err) {
@@ -5843,6 +5857,7 @@ async function setTaskTodoState(uid, state = "TODO") {
     function deriveDashboardTask(block, meta, set) {
       if (!block) return null;
       const title = formatDashboardTitle(block.string || "");
+      const isCompleted = isBlockCompleted(block);
       const startAt = meta?.start instanceof Date && !Number.isNaN(meta.start.getTime()) ? meta.start : null;
       const deferUntil = meta?.defer instanceof Date && !Number.isNaN(meta.defer.getTime()) ? meta.defer : null;
       const dueAt = meta?.due instanceof Date && !Number.isNaN(meta.due.getTime()) ? meta.due : null;
@@ -5851,8 +5866,9 @@ async function setTaskTodoState(uid, state = "TODO") {
       const deferBucket = deferUntil && now < deferUntil ? "deferred" : "available";
       const dueBucket = computeDueBucket(dueAt, now);
       const recurrenceBucket = meta?.repeat ? "recurring" : "one-off";
-      const availabilityLabel =
-        startBucket === "not-started"
+      const availabilityLabel = isCompleted
+        ? null
+        : startBucket === "not-started"
           ? "Not started"
           : deferBucket === "deferred"
             ? "Deferred"
@@ -5866,7 +5882,7 @@ async function setTaskTodoState(uid, state = "TODO") {
         pageTitle: block.page?.title || block.page?.["node/title"] || "",
         repeatText: meta?.repeat || "",
         isRecurring: !!meta?.repeat,
-        isCompleted: isBlockCompleted(block),
+        isCompleted,
         startAt,
         deferUntil,
         dueAt,
@@ -5875,6 +5891,7 @@ async function setTaskTodoState(uid, state = "TODO") {
         dueBucket,
         recurrenceBucket,
         availabilityLabel,
+        isCompleted,
         startDisplay: formatDateDisplay(startAt, set),
         deferDisplay: formatDateDisplay(deferUntil, set),
         dueDisplay: formatDateDisplay(dueAt, set),
