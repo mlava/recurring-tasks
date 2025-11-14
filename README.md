@@ -164,6 +164,12 @@ The `repeat::` attribute accepts **natural-language** patterns. Parsing is **cas
 **Anchor date**: the next occurrence is calculated from `due::` (preferred). If no `due::` is present, the current date is used as the anchor.  
 **Week start**: ranges and some weekly rules respect your **First day of the week** setting in the extension.
 
+This video demonstrates some of the recurrence/repeat functions:
+
+<p align="center">
+https://www.loom.com/share/f8856114bfd14d40a228292e7bcff9ee
+</p>
+
 ---
 
 ### 🗓️ Daily & Business Days
