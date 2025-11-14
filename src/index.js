@@ -19,6 +19,7 @@ const DASHBOARD_TOPBAR_BUTTON_ID = "bt-dashboard-button";
 
 let lastAttrNames = null;
 let activeDashboardController = null;
+const dashboardWatchers = new Map();
 let topbarButtonObserver = null;
 let themeObserver = null;
 let themeSyncTimer = null;
@@ -5582,6 +5583,7 @@ async function setTaskTodoState(uid, state = "TODO") {
 
       function removeTask(uid) {
         if (!uid) return;
+        removeDashboardWatch(uid);
         const tasks = state.tasks.filter((task) => task.uid !== uid);
         if (tasks.length === state.tasks.length) return;
         state = { ...state, tasks };
@@ -5652,6 +5654,7 @@ async function setTaskTodoState(uid, state = "TODO") {
           }
           state = { ...state, tasks: sortDashboardTasksList(tasks) };
           emit();
+          ensureDashboardWatch(uid);
         } catch (err) {
           console.warn("[BetterTasks] notifyBlockChange failed", err);
         }
@@ -5927,7 +5930,10 @@ async function setTaskTodoState(uid, state = "TODO") {
           const meta = await readRecurringMeta(block, set);
           if (!isBetterTasksTask(meta) || !isTaskBlock(block)) continue;
           const task = deriveDashboardTask(block, meta, set);
-          if (task) tasks.push(task);
+          if (task) {
+            tasks.push(task);
+            ensureDashboardWatch(task.uid);
+          }
         } catch (err) {
           console.warn("[BetterTasks] deriveDashboardTask failed", err);
         }
@@ -6148,6 +6154,7 @@ function isBetterTasksTask(meta) {
 
     removeDashboardTopbarButton();
     disconnectTopbarObserver();
+    clearDashboardWatches();
     if (activeDashboardController) {
       try {
         activeDashboardController.dispose?.();
@@ -6638,4 +6645,46 @@ function disconnectTopbarObserver() {
     // ignore
   }
   topbarButtonObserver = null;
+}
+
+function ensureDashboardWatch(uid) {
+  if (!uid || dashboardWatchers.has(uid)) return;
+  if (!window.roamAlphaAPI?.data?.addPullWatch) return;
+  const key = `better-tasks-watch-${uid}`;
+  try {
+    window.roamAlphaAPI.data.addPullWatch(
+      key,
+      "[:block/uid]",
+      { block: { uid } },
+      (_, after) => {
+        if (!after) {
+          removeDashboardWatch(uid);
+          activeDashboardController?.removeTask?.(uid);
+        } else {
+          activeDashboardController?.notifyBlockChange?.(uid, { bypassFilters: true });
+        }
+      }
+    );
+    dashboardWatchers.set(uid, key);
+  } catch (err) {
+    console.warn("[BetterTasks] addPullWatch failed", err);
+  }
+}
+
+function removeDashboardWatch(uid) {
+  if (!uid) return;
+  const key = dashboardWatchers.get(uid);
+  if (!key) return;
+  try {
+    window.roamAlphaAPI?.data?.removePullWatch?.(key);
+  } catch (err) {
+    console.warn("[BetterTasks] removePullWatch failed", err);
+  }
+  dashboardWatchers.delete(uid);
+}
+
+function clearDashboardWatches() {
+  for (const uid of Array.from(dashboardWatchers.keys())) {
+    removeDashboardWatch(uid);
+  }
 }
