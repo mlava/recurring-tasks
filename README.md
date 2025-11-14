@@ -129,7 +129,7 @@ Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or
 - A subtle ⋯ menu beside each task’s pills that lets you add or remove repeat/start/defer/due attributes (or edit them) without leaving the dashboard.
 - Clicking the repeat or date pills in the dashboard mirrors the inline pill behaviour: you can open the same pickers, copy repeat text, or jump straight to the target Daily Note without expanding the block in Roam.
 
-Use the dashboard to triage overdue work, snooze tasks in bulk, or jump straight to the next daily note page without leaving Roam.
+Use the dashboard to triage overdue work, snooze tasks, or jump straight to the next daily note page without leaving Roam.
 
 ### 🎨 Theme Compatibility (Beta)
 
