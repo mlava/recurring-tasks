@@ -120,7 +120,7 @@ All actions support **Undo** via a toast notification. If a start date isn't con
 
 ## 📊 Better Tasks Dashboard
 
-Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or the icon ![icon](image-1.png) that appears in Roam’s top bar. The dashboard lists every Better Task (recurring or scheduled one-off) with:
+Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or the icon <img src="image-1.png" width="16"> that appears in Roam’s top bar. The dashboard lists every Better Task (recurring or scheduled one-off) with:
 
 - Powerful filters for recurrence type, availability (start/defer), due bucket, and completion status.
 - Quick snooze actions, completion toggles, and links back to the originating blocks.
