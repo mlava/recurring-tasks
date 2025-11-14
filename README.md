@@ -7,6 +7,12 @@ This extension automatically recognizes and manages TODO items that match define
 **Note:** 
 This extension is in active development and should be considered a beta release. Please let me know of any bugs or unexpected behaviours in Slack  - https://app.slack.com/client/TNEAEL9QW/
 
+This video provides a basic overview of some of the functionality of this extension.
+
+<p align="center">
+https://www.loom.com/share/bb6ffd38ff35441ab2ed5138b5c2cb70
+</p>
+
 ---
 
 ## 📘 Quick Overview
