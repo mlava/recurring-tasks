@@ -1474,32 +1474,27 @@ export default {
             }
             continue;
           }
-        if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
+          if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
 
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          void decorateBlockPills(node);
-        }
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            void decorateBlockPills(node);
 
-        const removedTodo = Array.from(mutation.removedNodes || []).some(
-          (n) => n.nodeType === 1 && n.classList?.contains("rm-checkbox") && n.classList?.contains("rm-todo")
-        );
-        const addedDoneNode = Array.from(mutation.addedNodes || []).find(
-          (n) => n.nodeType === 1 && n.classList?.contains("rm-checkbox") && n.classList?.contains("rm-done")
-        );
-        if (removedTodo && addedDoneNode instanceof HTMLElement) {
-          const uid =
-            findBlockUidFromCheckbox(addedDoneNode) ||
-            findBlockUidFromElement(addedDoneNode) ||
-            findBlockUidFromElement(addedDoneNode.closest?.(".roam-block") || null);
-          if (uid) {
-            await processTaskCompletion(uid, { checkbox: addedDoneNode });
+            const inputs = node.matches?.(".check-container input")
+              ? [node]
+              : Array.from(node.querySelectorAll?.(".check-container input") || []);
+
+            for (const input of inputs) {
+              if (!(input?.control?.checked || input?.checked)) continue;
+              const uid = findBlockUidFromCheckbox(input);
+              if (!uid) continue;
+              await processTaskCompletion(uid, { checkbox: input });
+            }
           }
         }
-      }
 
-      sweepProcessed();
-    };
+        sweepProcessed();
+      };
 
       observer = new MutationObserver(callback);
       if (targetNode1) observer.observe(targetNode1, obsConfig);
@@ -1511,8 +1506,9 @@ export default {
 
     async function processTaskCompletion(uid, options = {}) {
       if (!uid) return null;
-      if (processedMap.has(uid)) return null;
-      if (options.firstSeenDone) return null;
+      if (processedMap.has(uid)) {
+        return null;
+      }
       processedMap.set(uid, Date.now());
       const checkbox = options.checkbox || null;
       try {
