@@ -811,12 +811,12 @@ export default {
       } catch (_) {
         parsedContent = null;
       }
-      console.info("[BetterTasks] OpenAI response", {
-        status: response?.status,
-        ok: response?.ok,
-        body: parsedBody ?? responseBodyText,
-        contentJson: parsedContent,
-      });
+      // console.info("[BetterTasks] OpenAI response", {
+      //   status: response?.status,
+      //   ok: response?.ok,
+      //   body: parsedBody ?? responseBodyText,
+      //   contentJson: parsedContent,
+      // });
       if (!response || !response.ok) {
         let errorText = null;
         let errorJson = null;
