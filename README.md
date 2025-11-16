@@ -96,6 +96,15 @@ If enabled, shows a confirmation dialogue (“Spawn next occurrence?”) when yo
 Tells Better Tasks which weekday your graph treats as the start of the week, and allows you to match your Roam Research preference setting.  
 Weekly rules that span multiple days or intervals (e.g., `every 2 weeks on Sat & Sun`, `Mon-Fri`) interpret ranges using this anchor. Default is **Monday**.
 
+## 🤖 AI Task Input Parsing (Experimental)
+- What it does: optionally sends the raw task text to OpenAI (your API key, client-side) and maps the returned JSON into Better Task title/repeat/date attributes. If anything fails, the normal “Create a Better Task” flow runs instead.
+- How to enable: in Better Tasks settings, set **AI parsing mode** to “Use my OpenAI key” and paste your key into **OpenAI API key**. When mode is Off or the key is blank, AI parsing is skipped automatically.
+- Privacy: the key and task text are sent directly from your browser to OpenAI; no extra backend is used. The key is stored in Roam’s extension settings (standard for Roam Depot AI extensions).
+- Limitations: early feature; repeat/date parsing may be conservative. Project/context/priority/energy fields are accepted but currently ignored. Ambiguous input may fall back to manual entry.
+- Failure behaviour: network/JSON/validation issues show a small toast (“AI parsing unavailable…”) and the normal Better Task prompt runs so task creation never blocks.
+- How it flows: use the existing “Create a Better Task” command palette entry or block context menu. If AI is enabled and you have text in the block, it’s sent to OpenAI; otherwise you’ll be prompted for text. A small spinner toast appears while waiting for the API.
+- Data safety: only the task text you supply plus your API key are sent directly to OpenAI; no proxy/server is involved. Nothing else from your graph is transmitted. If you hit quota issues, OpenAI returns 429/insufficient_quota; you’ll see a toast with a link to your billing page (`https://platform.openai.com/settings/organization/billing/overview`).
+
 **Note:** 
 The settings pane for the extension allows you to use whatever name for the repeat and start/defer/due date atttributes you choose. The extension defaults to using 'BT_attrRepeat', 'BT_attrStart', 'BT_attrDefer' and 'BT_attrDue' for the recurrence pattern and start/defer/due dates respectively. If you happen to already use these attributes for other purposes, the extension will recognise and attempt to use them if you don't set alternatives in the settings. Using 'frequency' and 'when' for example, would prevent the extension from acting on anything for which you already use 'BT_attrRepeat' and 'BT_attrDue'.
 

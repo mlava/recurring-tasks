@@ -71,52 +71,22 @@ Interactive task manager view
 
 ---
 
-## AI Task Input Parsing — Phase 1 (Planned)
+## AI Task Input Parsing — Phase 1 (🚧 In Progress)
 
-High-level plan for adding optional AI-assisted task creation using a user-supplied OpenAI API key.
+Optional AI-assisted task creation using a user-supplied OpenAI API key.
 
-1. **Settings & Feature Flag**
-   - Add a Better Tasks setting group for AI parsing.
-   - Options:
-     - `AI parsing mode: Off / Use my OpenAI key`.
-     - Hidden input field for the user’s OpenAI API key.
-   - Default to **Off**; feature is opt-in and clearly labelled as experimental.
+**Done**
+- Settings: AI parsing mode (Off / Use my OpenAI key) and API key input (opt-in, stored in Roam settings).
+- Client-side OpenAI call with strict JSON response, defensive parsing, and repeat/date validation using existing logic.
+- Mapping JSON → Better Tasks: title-only TODO text with child attrs for repeat/start/defer/due; relative dates parsed; repeat validated against current parser; scheduling text stripped from titles before write.
+- Fallback: on any AI failure, toast + console warn + automatic fallback to the existing manual “Create a Better Task” flow.
+- UX: integrated into existing command palette + block context menu (no separate AI command); spinner toast while awaiting OpenAI; quota-specific toast for 429/insufficient_quota.
+- Docs: README section covering enablement, privacy, limitations, and failure behaviour.
 
-2. **Client-Side OpenAI Call (BYO Key)**
-   - When AI parsing is enabled and a key is present, send the raw task input string directly to the OpenAI API from the extension.
-   - Use a strict JSON-output format (or function calling) that returns a `ParsedTask` object with fields like `title`, `repeatRule`, `dueDate`, and optional metadata (project/context/priority/energy).
-   - Enforce small, bounded prompts and responses (token limits, defensive parsing).
-
-3. **Mapping JSON → Better Tasks Block Structure**
-   - Validate the returned JSON against a lightweight schema.
-   - Convert `ParsedTask` into:
-     - A TODO block string (task title only).
-     - Child blocks using the configured attribute names (`BT_attrRepeat`, `BT_attrStart`, `BT_attrDefer`, `BT_attrDue`, `BT_attrCompleted`, and future project/context/priority/energy attributes).
-   - Reuse existing repeat/date parsing logic whenever possible (AI outputs rules/text that your current parser already understands).
-
-4. **Fallback Behaviour**
-   - If the OpenAI call fails, times out, or returns invalid JSON:
-     - Log a console warning in dev builds.
-     - Show a small notification (e.g. iziToast) that AI parsing is unavailable.
-     - Fall back to the current “Create a Better Task” flow, creating a normal TODO using the raw input text and no AI-derived attributes.
-   - Ensure that failure never blocks task creation.
-
-5. **UX Integration**
-   - Add an “AI create task” option to the command palette and/or dashboard “New task” UI.
-   - When enabled, the AI path is used; otherwise, the existing manual create-task flow runs unchanged.
-   - Keep AI parsing optional and clearly separated so users can choose their preferred flow.
-
-6. **Documentation & Safety Notes**
-   - Update README / docs to include:
-     - What AI task parsing does.
-     - That it is BYO OpenAI key, stored in Roam settings and used client-side.
-     - Clear notes on privacy and limitations (e.g. experimental, may misinterpret ambiguous text).
-   - Add a short troubleshooting section for common failure modes (invalid key, network issues).
-
-7. **Initial Testing & Iteration**
-   - Create a small test suite of sample input strings in Roam to exercise AI parsing (simple, recurring, messy/ambiguous).
-   - Iterate on prompts and output schema as needed, without changing the underlying Better Tasks storage model.
-   - Only consider Phase 2 (e.g. hosted proxy, richer models) after Phase 1 is stable and useful for power users.
+**Pending**
+- Dashboard entry point for AI creation (currently command palette + block context menu only).
+- Mapping/storing project/context/priority/energy when those attributes are defined.
+- Further prompt/model tuning once broader usage feedback arrives.
 
 ### Phase 2 AI Ideas (Not Yet Scheduled)
 

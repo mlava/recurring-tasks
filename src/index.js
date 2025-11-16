@@ -9,6 +9,20 @@ const DEFAULT_DUE_ATTR = "BT_attrDue";
 const DEFAULT_COMPLETED_ATTR = "BT_attrCompleted";
 const ADVANCE_ATTR = "BT_attrAdvance";
 const INSTALL_TOAST_KEY = "rt-intro-toast";
+const AI_MODE_SETTING = "bt-ai-mode";
+const AI_KEY_SETTING = "bt-ai-openai-key";
+const AI_MODE_OPTIONS = ["Off", "Use my OpenAI key"];
+const AI_MODEL = "gpt-4o-mini";
+const AI_SYSTEM_PROMPT = [
+  "You are a strict JSON generator for task parsing. Return ONLY JSON with no prose.",
+  'Required: { "title": string }',
+  'Optional: "repeatRule", "dueDateText", "startDateText", "deferDateText", "project", "context", "priority", "energy".',
+  'priority/energy must be one of: "low", "medium", "high", or null.',
+  "Dates: prefer Roam page links like [[November 18th, 2025]]; if unsure, use short phrases like \"tomorrow\" or \"next Monday\".",
+  "Keep scheduling details (repeat/dates) OUT of the title; place them only in repeatRule/dueDateText/startDateText/deferDateText. The title should just be the task text.",
+  "Do not invent details not implied.",
+  'If input lacks a clear task title, set "title" to the original input.',
+].join(" ");
 const START_ICON = "⏱";
 const DEFER_ICON = "⏳";
 const DUE_ICON = "📅";
@@ -143,6 +157,18 @@ export default {
           description: "Used to align weekly schedules with your graph preference",
           action: { type: "select", items: WEEK_START_OPTIONS },
         },
+        {
+          id: AI_MODE_SETTING,
+          name: "AI parsing mode",
+          description: "Optional: use your OpenAI API key for AI-assisted task parsing",
+          action: { type: "select", items: AI_MODE_OPTIONS },
+        },
+        {
+          id: AI_KEY_SETTING,
+          name: "OpenAI API key",
+          description: "Sensitive: stored in Roam settings; used client-side only for AI parsing",
+          action: { type: "input", placeholder: "sk-...", onChange: () => { } },
+        },
       ],
     };
     extensionAPI.settings.panel.create(config);
@@ -166,7 +192,11 @@ export default {
     });
     extensionAPI.ui.commandPalette.addCommand({
       label: "Create a Better Task",
-      callback: () => createRecurringTODO(),
+      callback: () => createBetterTaskEntryPoint(),
+    });
+    window.roamAlphaAPI.ui.blockContextMenu.addCommand({
+      label: "Create a Better Task",
+      callback: (e) => createBetterTaskEntryPoint(e),
     });
 
     activeDashboardController = createDashboardController(extensionAPI);
@@ -352,6 +382,90 @@ export default {
       scheduleSurfaceSync(set.attributeSurface);
     }
 
+    async function createBetterTaskEntryPoint(e) {
+      let targetUid = null;
+      if (e && e["block-uid"]) {
+        targetUid = e["block-uid"];
+      } else {
+        const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
+        targetUid = focused && focused["block-uid"];
+      }
+      if (!targetUid) {
+        toast("Place the cursor in the block where you wish to create the TODO.");
+        return;
+      }
+
+      const block = await getBlock(targetUid);
+      if (!block) {
+        toast("Unable to read the current block.");
+        return;
+      }
+
+      let rawText = (block.string || "").trim();
+      if (!rawText) {
+        const input = await promptForValue({
+          title: "Create a Better Task",
+          message: "Enter task text",
+          placeholder: "Task text",
+          initial: "",
+        });
+        if (!input) return;
+        rawText = input.trim();
+        if (!rawText) {
+          toast("Enter some task text.");
+          return;
+        }
+        await updateBlockString(targetUid, input);
+      }
+
+      const attrNames = resolveAttributeNames();
+      const removalKeys = [
+        ...new Set([
+          ...attrNames.repeatRemovalKeys,
+          ...attrNames.dueRemovalKeys,
+          ...attrNames.startRemovalKeys,
+          ...attrNames.deferRemovalKeys,
+          "completed",
+        ]),
+      ];
+      const cleanedInput = removeInlineAttributes(rawText, removalKeys)
+        .replace(/^\{\{\[\[(?:TODO|DONE)\]\]\}\}\s*/i, "")
+        .trim();
+      const aiInput = cleanedInput || rawText;
+
+      const aiSettings = getAiSettings();
+      if (isAiEnabled(aiSettings)) {
+        const pending = showPersistentToast("Parsing task with AI…");
+        let aiResult = null;
+        try {
+          aiResult = await parseTaskWithOpenAI(aiInput, aiSettings);
+        } catch (err) {
+          console.warn("[BetterTasks] AI parsing threw unexpectedly", err);
+          aiResult = { ok: false, error: err };
+        } finally {
+          hideToastInstance(pending);
+        }
+        if (aiResult.ok) {
+          const applied = await createTaskFromParsedJson(targetUid, aiResult.task, aiInput);
+          if (applied) {
+            toast("Created Better Task with AI parsing");
+            return;
+          }
+        } else {
+          console.warn("[BetterTasks] AI parsing unavailable", aiResult.error || aiResult.reason);
+          if (aiResult.status === 429 || aiResult.code === "insufficient_quota") {
+            toast(
+              `AI parsing unavailable (429 from OpenAI). Check your billing/credit: https://platform.openai.com/settings/organization/billing/overview`
+            );
+          } else {
+            toast("AI parsing unavailable, creating a normal Better Task instead.");
+          }
+        }
+      }
+
+      await createRecurringTODO();
+    }
+
     async function createRecurringTODO() {
       const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
       const fuid = focused && focused["block-uid"];
@@ -495,6 +609,62 @@ export default {
       scheduleSurfaceSync(set.attributeSurface);
     }
 
+    async function createTaskFromParsedJson(blockUid, parsed, rawInput = "") {
+      if (!blockUid || !parsed) return false;
+      const block = await getBlock(blockUid);
+      if (!block) return false;
+      const baseTitle = typeof parsed.title === "string" ? parsed.title.trim() : "";
+      if (!baseTitle) return false;
+      const cleanedTitle = stripSchedulingFromTitle(baseTitle, parsed);
+      const attrNames = resolveAttributeNames();
+      const set = S(attrNames);
+
+      const todoString = normalizeToTodoMacro(cleanedTitle);
+      if (todoString !== (block.string || "")) {
+        await updateBlockString(blockUid, todoString);
+      }
+
+      let repeatVal = "";
+      if (typeof parsed.repeatRule === "string" && parsed.repeatRule.trim()) {
+        const normalizedRepeat = normalizeRepeatRuleText(parsed.repeatRule) || parsed.repeatRule.trim();
+        if (parseRuleText(normalizedRepeat, set)) {
+          repeatVal = normalizedRepeat;
+        } else {
+          console.warn("[BetterTasks] AI repeat rule invalid, ignoring", normalizedRepeat);
+        }
+      }
+
+      const parseAndFormatDate = (value) => {
+        if (typeof value !== "string" || !value.trim()) return null;
+        const dt = parseRoamDate(value.trim()) || parseRelativeDateText(value.trim());
+        if (!(dt instanceof Date) || Number.isNaN(dt.getTime())) return null;
+        return formatDate(dt, set);
+      };
+
+      const dueStr = parseAndFormatDate(parsed.dueDateText);
+      const startStr = parseAndFormatDate(parsed.startDateText);
+      const deferStr = parseAndFormatDate(parsed.deferDateText);
+
+      const props = parseProps(block.props);
+      const rtProps = { ...(props.rt || {}) };
+      if (!rtProps.id) rtProps.id = shortId();
+      if (!rtProps.tz) rtProps.tz = set.timezone;
+      await updateBlockProps(blockUid, { rt: rtProps });
+
+      if (repeatVal) await ensureChildAttrForType(blockUid, "repeat", repeatVal, set.attrNames);
+      else await removeChildAttrsForType(blockUid, "repeat", set.attrNames);
+      if (dueStr) await ensureChildAttrForType(blockUid, "due", dueStr, set.attrNames);
+      else await removeChildAttrsForType(blockUid, "due", set.attrNames);
+      if (startStr) await ensureChildAttrForType(blockUid, "start", startStr, set.attrNames);
+      else await removeChildAttrsForType(blockUid, "start", set.attrNames);
+      if (deferStr) await ensureChildAttrForType(blockUid, "defer", deferStr, set.attrNames);
+      else await removeChildAttrsForType(blockUid, "defer", set.attrNames);
+
+      repeatOverrides.delete(blockUid);
+      scheduleSurfaceSync(set.attributeSurface);
+      return true;
+    }
+
     function getWeekStartSetting() {
       const raw = extensionAPI.settings.get("rt-week-start");
       if (typeof raw === "string" && WEEK_START_OPTIONS.includes(raw)) return raw;
@@ -551,6 +721,145 @@ export default {
         weekStart: weekStartLabel,
         weekStartCode,
       };
+    }
+
+    function getAiSettings() {
+      const modeRaw = extensionAPI.settings.get(AI_MODE_SETTING);
+      const mode = AI_MODE_OPTIONS.includes(modeRaw) ? modeRaw : "Off";
+      const keyRaw = extensionAPI.settings.get(AI_KEY_SETTING);
+      const apiKey = typeof keyRaw === "string" ? keyRaw.trim() : "";
+      return { mode, apiKey };
+    }
+
+    function isAiEnabled(aiSettings) {
+      return aiSettings?.mode === "Use my OpenAI key" && !!aiSettings.apiKey;
+    }
+
+    async function parseTaskWithOpenAI(input, aiSettings) {
+      if (!isAiEnabled(aiSettings)) return { ok: false, reason: "disabled" };
+      const payload = {
+        model: AI_MODEL,
+        messages: [
+          { role: "system", content: AI_SYSTEM_PROMPT },
+          { role: "user", content: input },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: 300,
+      };
+      // console.info("[BetterTasks] OpenAI request", {
+      //   model: payload.model,
+      //   messages: payload.messages?.map((m) => ({
+      //     role: m.role,
+      //     contentLength: m.content?.length,
+      //     content: m.content,
+      //   })),
+      //   messageCount: payload.messages?.length,
+      //   userLength: input?.length,
+      //   response_format: payload.response_format,
+      //   max_tokens: payload.max_tokens,
+      // });
+      let response = null;
+      try {
+        response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${aiSettings.apiKey}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (err) {
+        console.warn("[BetterTasks] OpenAI request failed", err);
+        return { ok: false, error: err };
+      }
+      let responseBodyText = null;
+      try {
+        responseBodyText = await response.clone().text();
+      } catch (_) {
+        // non-fatal
+      }
+      // console.info("[BetterTasks] OpenAI response", {
+      //   status: response?.status,
+      //   ok: response?.ok,
+      //   body: responseBodyText,
+      // });
+      if (!response || !response.ok) {
+        let errorText = null;
+        let errorJson = null;
+        try {
+          errorText = await response.text();
+          errorJson = JSON.parse(errorText);
+        } catch (_) {
+          // ignore parse issues
+        }
+        const message =
+          errorJson?.error?.message || errorText || `OpenAI response ${response?.status || "unknown"}`;
+        const code = errorJson?.error?.code || errorJson?.error?.type || null;
+        return {
+          ok: false,
+          error: new Error(message),
+          status: response?.status,
+          code,
+        };
+      }
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (err) {
+        return { ok: false, error: err };
+      }
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content || typeof content !== "string") {
+        return { ok: false, error: new Error("Empty response") };
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(content);
+      } catch (err) {
+        return { ok: false, error: err };
+      }
+      const validated = validateParsedTask(parsed);
+      if (!validated.ok) return validated;
+      return validated;
+    }
+
+    function validateParsedTask(raw) {
+      if (!raw || typeof raw !== "object") return { ok: false, error: new Error("Invalid JSON shape") };
+      const title = typeof raw.title === "string" ? raw.title.trim() : "";
+      if (!title) return { ok: false, error: new Error("Missing title") };
+      const task = { title };
+      if (typeof raw.repeatRule === "string" && raw.repeatRule.trim()) task.repeatRule = raw.repeatRule.trim();
+      if (typeof raw.dueDateText === "string" && raw.dueDateText.trim()) task.dueDateText = raw.dueDateText.trim();
+      if (typeof raw.startDateText === "string" && raw.startDateText.trim()) task.startDateText = raw.startDateText.trim();
+      if (typeof raw.deferDateText === "string" && raw.deferDateText.trim()) task.deferDateText = raw.deferDateText.trim();
+      if (typeof raw.project === "string" && raw.project.trim()) task.project = raw.project.trim();
+      if (typeof raw.context === "string" && raw.context.trim()) task.context = raw.context.trim();
+      const allowedRatings = new Set(["low", "medium", "high"]);
+      if (typeof raw.priority === "string" && allowedRatings.has(raw.priority)) task.priority = raw.priority;
+      if (raw.priority === null) task.priority = null;
+      if (typeof raw.energy === "string" && allowedRatings.has(raw.energy)) task.energy = raw.energy;
+      if (raw.energy === null) task.energy = null;
+      return { ok: true, task };
+    }
+
+    function stripSchedulingFromTitle(title, parsed) {
+      const hasRepeat = typeof parsed?.repeatRule === "string" && parsed.repeatRule.trim();
+      const hasDate =
+        typeof parsed?.dueDateText === "string" && parsed.dueDateText.trim() ||
+        typeof parsed?.startDateText === "string" && parsed.startDateText.trim() ||
+        typeof parsed?.deferDateText === "string" && parsed.deferDateText.trim();
+      let t = (title || "").trim();
+      if (!t) return t;
+      if (hasRepeat) {
+        t = t.replace(/,\s*(every|daily|weekly|monthly|yearly|annually|weekdays|weekends)\b.*$/i, "").trim();
+        t = t.replace(/\b(every|daily|weekly|monthly|yearly|annually|weekdays|weekends)\b.*$/i, "").trim();
+      }
+      if (hasDate) {
+        t = t.replace(/\s*(on|by|due|for)\s+(tomorrow|today|next\s+[a-z]+|this\s+[a-z]+)$/i, "").trim();
+        t = t.replace(/\s*(on\s+)?\[\[[^\]]+\]\]\s*$/i, "").trim();
+        t = t.replace(/\s*(tomorrow|today|next\s+[a-z]+)$/i, "").trim();
+      }
+      return t || (title || "").trim();
     }
 
     const processedMap = new Map();
@@ -3207,6 +3516,31 @@ export default {
 
       return null;
     }
+    function parseRelativeDateText(s) {
+      if (!s || typeof s !== "string") return null;
+      const raw = s.trim().toLowerCase();
+      if (!raw) return null;
+      if (raw === "today") return todayLocal();
+      if (/^tomor+ow$/.test(raw) || raw === "tmr" || raw === "tmrw") {
+        return addDaysLocal(todayLocal(), 1);
+      }
+      const nextDowMatch = raw.match(/^next\s+([a-z]+)$/);
+      if (nextDowMatch) {
+        const dowCode = dowFromAlias(nextDowMatch[1]);
+        if (dowCode) return nextDowDate(todayLocal(), dowCode);
+      }
+      return null;
+    }
+    function nextDowDate(anchor, dowCode) {
+      if (!(anchor instanceof Date) || Number.isNaN(anchor.getTime())) return null;
+      if (!dowCode || !DOW_IDX.includes(dowCode)) return null;
+      const current = DOW_IDX[anchor.getDay()];
+      const curIdx = DOW_IDX.indexOf(current);
+      const targetIdx = DOW_IDX.indexOf(dowCode);
+      let delta = targetIdx - curIdx;
+      if (delta <= 0) delta += 7;
+      return addDaysLocal(anchor, delta);
+    }
     function formatDate(d, set) {
       if (set.dateFormat === "ISO") {
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
@@ -3399,6 +3733,47 @@ export default {
         closeOnClick: true,
         displayMode: 2,
       });
+    }
+
+    function showPersistentToast(msg) {
+      try {
+        return iziToast.show({
+          theme: "light",
+          color: "black",
+          message: msg,
+          class: "betterTasks",
+          position: "center",
+          id: "betterTasks-ai-pending",
+          close: true,
+          timeout: false,
+          closeOnClick: true,
+          displayMode: 2,
+        });
+      } catch (err) {
+        console.warn("[BetterTasks] showPersistentToast failed", err);
+        return null;
+      }
+    }
+
+    function hideToastInstance(instance) {
+      const fallbackId = "betterTasks-ai-pending";
+      const targetId =
+        (typeof instance === "string" && instance) ||
+        instance?.id ||
+        instance?.toastRef?.id ||
+        instance?.toast?.id ||
+        instance?.el?.id ||
+        fallbackId;
+      try {
+        iziToast.hide({ transitionOut: "fadeOut" }, targetId);
+      } catch (err) {
+        console.warn("[BetterTasks] hideToastInstance failed", err);
+      }
+      try {
+        iziToast.destroy(targetId);
+      } catch (_) {
+        // best effort cleanup
+      }
     }
 
     function noteRepeatParseFailure(uid) {
@@ -6123,6 +6498,7 @@ export default {
     }
 
     window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Convert TODO to Better Task" });
+    window.roamAlphaAPI.ui.blockContextMenu.removeCommand({ label: "Create a Better Task" });
     // window.roamAlphaAPI.ui.blockContextMenu.removeCommand({label: "Convert Better Task to plain TODO",});
     disconnectThemeObserver();
   },
