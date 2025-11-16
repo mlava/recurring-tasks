@@ -2,7 +2,7 @@
 
 Bring true task management to Roam Research!
 
-This extension automatically recognizes and manages TODO items that match defined repeat pattern and/or date attributes, optionally generating the next instance when a repeating Better Task is completed. 
+This extension automatically recognises and manages TODO items that match defined repeat patterns and/or date attributes, optionally generating the next instance when a repeating Better Task is completed. 
 
 **Note:** 
 This extension is in active development and should be considered a beta release. Please let me know of any bugs or unexpected behaviours in Slack  - https://app.slack.com/client/TNEAEL9QW/
@@ -46,7 +46,7 @@ Leave the repeat field blank while setting any combination of `start::`, `defer:
 
 Regardless of how you enter the attributes, the extension emits a compact **pill** next to each Better Task whenever its child blocks are collapsed:
 
-![alt text](https://raw.githubusercontent.com/mlavercombe/better-tasks/main/images/image.png)
+![alt text](https://raw.githubusercontent.com/mlava/better-tasks/main/images/image.png)
 
 - Pills disappear automatically when you expand the task (so you can edit the child blocks directly) and reappear when the block is collapsed.
 - Marking the TODO complete hides the pill until the extension spawns the next occurrence, keeping finished items visually quiet.
@@ -90,7 +90,7 @@ Label written when the task is marked DONE (default `BT_attrCompleted`).
 You can change any of these attributes in Settings. These defaults have been chosen to minimise the risk of unexpected behaviours if you already use start:: defer:: repeat:: due:: or completed:: in your graph for other purposes.
 
 ### Confirm Before Spawning Next Task
-If enabled, shows a confirmation dialog (“Spawn next occurrence?”) when you complete a repeating Better Task.
+If enabled, shows a confirmation dialogue (“Spawn next occurrence?”) when you complete a repeating Better Task.
 
 ### First day of the week
 Tells Better Tasks which weekday your graph treats as the start of the week, and allows you to match your Roam Research preference setting.  
@@ -126,7 +126,7 @@ All actions support **Undo** via a toast notification. If a start date isn't con
 
 ## 📊 Better Tasks Dashboard
 
-Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or the icon <img src="https://raw.githubusercontent.com/mlavercombe/better-tasks/main/images/image-2.png" width="22"> that appears in Roam’s top bar. The dashboard lists every Better Task (recurring or scheduled one-off) with:
+Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or the icon <img src="https://raw.githubusercontent.com/mlava/better-tasks/main/images/image-2.png" width="22"> that appears in Roam’s top bar. The dashboard lists every Better Task (recurring or scheduled one-off) with:
 
 - Powerful filters for recurrence type, availability (start/defer), due bucket, and completion status.
 - Quick snooze actions, completion toggles, and links back to the originating blocks.
@@ -142,7 +142,7 @@ Use the dashboard to triage overdue work, snooze tasks, or jump straight to the 
 Better Tasks samples colors from Roam’s active theme and applies a lightweight contrast layer so the dashboard and pills feel native in both light and dark modes. Because every graph can load different community themes, there may still be combinations that need tweaks. If you notice illegible text or mismatched backgrounds, please report the theme you’re using so we can fine‑tune the adaptive styling.
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/mlavercombe/better-tasks/main/images/theming.gif"/>
+<img src="https://raw.githubusercontent.com/mlava/better-tasks/main/images/theming.gif"/>
 </p>
 
 ---
@@ -282,7 +282,7 @@ https://www.loom.com/share/f8856114bfd14d40a228292e7bcff9ee
 - **Ranges**: `Mon–Fri` (or `Mon-Fri`) expands to all included days.  
 - **Clamping**: Day numbers beyond a month’s end **clamp** to the last valid date (e.g., `31st` → Feb 28/29).  
 - **“Every N weekdays”** counts **business days** (Mon–Fri) only.  
-- **Pluralization** is flexible: `monday`/`mondays`, `week`/`weeks`, etc.
+- **Pluralisation** is flexible: `monday`/`mondays`, `week`/`weeks`, etc.
 
 ---
 
