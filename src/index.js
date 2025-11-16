@@ -19,6 +19,8 @@ const AI_SYSTEM_PROMPT = [
   'Optional: "repeatRule", "dueDateText", "startDateText", "deferDateText", "project", "context", "priority", "energy".',
   'priority/energy must be one of: "low", "medium", "high", or null.',
   "Dates: prefer Roam page links like [[November 18th, 2025]]; if unsure, use short phrases like \"tomorrow\" or \"next Monday\".",
+  "Please consider words like beginning, starting at, available from as potential indicators of start dates or defer dates, depending on the context.",
+  "Please consider words like every, each, daily, weekly, monthly, yearly, annually, weekdays, weekends, biweekly, fortnightly, quarterly, semiannual(ly), semi-annual(ly), twice a year, every N days/weeks/months/years as indicators of repeat rules.",
   "Keep scheduling details (repeat/dates) OUT of the title; place them only in repeatRule/dueDateText/startDateText/deferDateText. The title should just be the task text.",
   "Do not invent details not implied.",
   'If input lacks a clear task title, set "title" to the original input.',
@@ -389,10 +391,10 @@ export default {
       } else {
         const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
         targetUid = focused && focused["block-uid"];
-      }
-      if (!targetUid) {
-        toast("Place the cursor in the block where you wish to create the TODO.");
-        return;
+        if (!targetUid) {
+          toast("Place the cursor in the block where you wish to create the Better Task.");
+          return;
+        }
       }
 
       const block = await getBlock(targetUid);
@@ -463,15 +465,17 @@ export default {
         }
       }
 
-      await createRecurringTODO();
+      await createRecurringTODO(targetUid);
     }
 
-    async function createRecurringTODO() {
-      const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
-      const fuid = focused && focused["block-uid"];
-      if (fuid == null || fuid == undefined) {
-        toast("Place the cursor in the block where you wish to create the TODO.");
-        return;
+    async function createRecurringTODO(fuid) {
+      if (!fuid) {
+        const focused = await window.roamAlphaAPI.ui.getFocusedBlock();
+        const fuid = focused && focused["block-uid"];
+        if (fuid == null || fuid == undefined) {
+          toast("Place the cursor in the block where you wish to create the TODO.");
+          return;
+        }
       }
 
       const block = await getBlock(fuid);
@@ -636,7 +640,7 @@ export default {
 
       const parseAndFormatDate = (value) => {
         if (typeof value !== "string" || !value.trim()) return null;
-        const dt = parseRoamDate(value.trim()) || parseRelativeDateText(value.trim());
+        const dt = parseRoamDate(value.trim()) || parseRelativeDateText(value.trim(), set.weekStartCode);
         if (!(dt instanceof Date) || Number.isNaN(dt.getTime())) return null;
         return formatDate(dt, set);
       };
@@ -778,11 +782,11 @@ export default {
       } catch (_) {
         // non-fatal
       }
-      // console.info("[BetterTasks] OpenAI response", {
-      //   status: response?.status,
-      //   ok: response?.ok,
-      //   body: responseBodyText,
-      // });
+      console.info("[BetterTasks] OpenAI response", {
+        status: response?.status,
+        ok: response?.ok,
+        body: responseBodyText,
+      });
       if (!response || !response.ok) {
         let errorText = null;
         let errorJson = null;
@@ -2955,6 +2959,20 @@ export default {
       if (t === "weekly" || t === "every week") return { kind: "WEEKLY", interval: 1, byDay: null };
       if (t === "every other week" || t === "every second week" || t === "biweekly" || t === "fortnightly" || t === "every fortnight")
         return { kind: "WEEKLY", interval: 2, byDay: null };
+      m = t.match(/^every\s+(other|second|2nd)\s+([a-z]+)s?$/);
+      if (m) {
+        const dowCode = dowFromAlias(m[2]);
+        if (dowCode) return { kind: "WEEKLY", interval: 2, byDay: [dowCode] };
+      }
+      m = t.match(/^every\s+(\d+)(?:st|nd|rd|th)?\s+([a-z]+)s?$/);
+      if (m) {
+        const intervalNum = parseInt(m[1], 10);
+        const dowCode = dowFromAlias(m[2]);
+        if (dowCode && intervalNum >= 1) {
+          if (intervalNum === 1) return { kind: "WEEKLY", interval: 1, byDay: [dowCode] };
+          return { kind: "WEEKLY", interval: intervalNum, byDay: [dowCode] };
+        }
+      }
 
       // 5) Weekly with "on …"
       let weeklyOn = t.match(/^(?:every week|weekly)\s+on\s+(.+)$/);
@@ -3516,13 +3534,18 @@ export default {
 
       return null;
     }
-    function parseRelativeDateText(s) {
+    function parseRelativeDateText(s, weekStartCode = DEFAULT_WEEK_START_CODE) {
       if (!s || typeof s !== "string") return null;
       const raw = s.trim().toLowerCase();
       if (!raw) return null;
       if (raw === "today") return todayLocal();
       if (/^tomor+ow$/.test(raw) || raw === "tmr" || raw === "tmrw") {
         return addDaysLocal(todayLocal(), 1);
+      }
+      if (raw === "next week") {
+        const anchor = todayLocal();
+        const thisWeekStart = startOfWeek(anchor, weekStartCode);
+        return addDaysLocal(thisWeekStart, 7);
       }
       const nextDowMatch = raw.match(/^next\s+([a-z]+)$/);
       if (nextDowMatch) {
@@ -3757,20 +3780,22 @@ export default {
 
     function hideToastInstance(instance) {
       const fallbackId = "betterTasks-ai-pending";
-      const targetId =
-        (typeof instance === "string" && instance) ||
-        instance?.id ||
-        instance?.toastRef?.id ||
-        instance?.toast?.id ||
-        instance?.el?.id ||
-        fallbackId;
+      const targetEl =
+        (instance && instance.toastRef) ||
+        (instance && instance.toast) ||
+        (instance && instance.el) ||
+        (typeof instance === "string" ? document.getElementById(instance) : null) ||
+        document.getElementById(fallbackId);
+      if (!targetEl) return;
       try {
-        iziToast.hide({ transitionOut: "fadeOut" }, targetId);
+        iziToast.hide({ transitionOut: "fadeOut" }, targetEl);
       } catch (err) {
         console.warn("[BetterTasks] hideToastInstance failed", err);
       }
       try {
-        iziToast.destroy(targetId);
+        if (targetEl.id) {
+          iziToast.destroy(targetEl.id);
+        }
       } catch (_) {
         // best effort cleanup
       }
