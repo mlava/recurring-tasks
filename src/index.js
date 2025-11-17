@@ -407,7 +407,13 @@ export default {
       }
 
       let rawText = (block.string || "").trim();
-      if (!rawText) {
+      const aiSettings = getAiSettings();
+      const aiEnabled = isAiEnabled(aiSettings);
+      if (!rawText && !aiEnabled) {
+        await createRecurringTODO(targetUid);
+        return;
+      }
+      if (!rawText && aiEnabled) {
         const input = await promptForValue({
           title: "Create a Better Task",
           message: "Enter task text",
@@ -438,33 +444,35 @@ export default {
         .trim();
       const aiInput = cleanedInput || rawText;
 
-      const aiSettings = getAiSettings();
-      if (isAiEnabled(aiSettings)) {
-        const pending = showPersistentToast("Parsing task with AI…");
-        let aiResult = null;
-        try {
-          aiResult = await parseTaskWithOpenAI(aiInput, aiSettings);
-        } catch (err) {
-          console.warn("[BetterTasks] AI parsing threw unexpectedly", err);
-          aiResult = { ok: false, error: err };
-        } finally {
-          hideToastInstance(pending);
+      if (!aiEnabled) {
+        await createRecurringTODO(targetUid);
+        return;
+      }
+
+      const pending = showPersistentToast("Parsing task with AI…");
+      let aiResult = null;
+      try {
+        aiResult = await parseTaskWithOpenAI(aiInput, aiSettings);
+      } catch (err) {
+        console.warn("[BetterTasks] AI parsing threw unexpectedly", err);
+        aiResult = { ok: false, error: err };
+      } finally {
+        hideToastInstance(pending);
+      }
+      if (aiResult.ok) {
+        const applied = await createTaskFromParsedJson(targetUid, aiResult.task, aiInput);
+        if (applied) {
+          toast("Created Better Task with AI parsing");
+          return;
         }
-        if (aiResult.ok) {
-          const applied = await createTaskFromParsedJson(targetUid, aiResult.task, aiInput);
-          if (applied) {
-            toast("Created Better Task with AI parsing");
-            return;
-          }
+      } else {
+        console.warn("[BetterTasks] AI parsing unavailable", aiResult.error || aiResult.reason);
+        if (aiResult.status === 429 || aiResult.code === "insufficient_quota") {
+          toast(
+            `AI parsing unavailable (429 from OpenAI). Check your billing/credit: https://platform.openai.com/settings/organization/billing/overview`
+          );
         } else {
-          console.warn("[BetterTasks] AI parsing unavailable", aiResult.error || aiResult.reason);
-          if (aiResult.status === 429 || aiResult.code === "insufficient_quota") {
-            toast(
-              `AI parsing unavailable (429 from OpenAI). Check your billing/credit: https://platform.openai.com/settings/organization/billing/overview`
-            );
-          } else {
-            toast("AI parsing unavailable, creating a normal Better Task instead.");
-          }
+          toast("AI parsing unavailable, creating a normal Better Task instead.");
         }
       }
 
@@ -897,11 +905,28 @@ export default {
       return t || (title || "").trim();
     }
 
+    const DEBUG_COMPLETION_LOGS =
+      (() => {
+        try {
+          return window.localStorage?.getItem?.("bt-debug-completions") === "1";
+        } catch (_) {
+          return false;
+        }
+      })() || false;
     const processedMap = new Map();
+    const completionPairs = new Map();
+    const completionQueue = new Map();
+    let completionQueueTimer = null;
+    let completionQueueFlushInFlight = false;
+    const COMPLETION_PAIR_WINDOW_MS = 1200;
+    const USER_COMPLETION_BYPASS_MS = 2200;
     const repeatOverrides = new Map();
     const invalidRepeatToasted = new Set();
     const invalidDueToasted = new Set();
     const deletingChildAttrs = new Set();
+    let pageLoadQuietUntil = 0;
+    let lastUserCheckboxInteraction = 0;
+    const PAGE_COMPLETION_GRACE_MS = 1800;
 
     function normalizeOverrideEntry(entry) {
       if (!entry) return null;
@@ -1268,6 +1293,20 @@ export default {
     document.addEventListener("input", _handleAnyEdit, true);
     document.addEventListener("blur", _handleAnyEdit, true);
 
+    const checkboxInteractionSelectors = ".check-container input, .rm-checkbox input";
+    const _onCheckboxPointer = (event) => {
+      if (!(event?.target instanceof HTMLElement)) return;
+      if (!event.target.matches?.(checkboxInteractionSelectors)) return;
+      markUserCheckboxInteraction();
+    };
+    const _onCheckboxChange = (event) => {
+      if (!(event?.target instanceof HTMLElement)) return;
+      if (!event.target.matches?.(checkboxInteractionSelectors)) return;
+      markUserCheckboxInteraction();
+    };
+    document.addEventListener("pointerdown", _onCheckboxPointer, true);
+    document.addEventListener("change", _onCheckboxChange, true);
+
     function normalizeUid(raw) {
       if (!raw) return null;
       const trimmed = String(raw).trim();
@@ -1378,6 +1417,138 @@ export default {
       return null;
     }
 
+    function findCheckboxInNode(node, selector) {
+      if (!(node instanceof HTMLElement)) return null;
+      if (node.matches?.(selector)) return node;
+      return node.querySelector?.(selector) || null;
+    }
+
+    function logCompletionDebug(event, payload = {}) {
+      if (!DEBUG_COMPLETION_LOGS) return;
+      try {
+        console.log(`[BT Completion] ${event}`, payload);
+      } catch (_) {
+        // ignore logging failures
+      }
+    }
+
+    function markUserCheckboxInteraction() {
+      lastUserCheckboxInteraction = Date.now();
+      logCompletionDebug("user-checkbox-interaction", { at: lastUserCheckboxInteraction });
+    }
+
+    function deriveUidFromMutationNode(node, fallbackTarget) {
+      const checkboxInput =
+        node instanceof HTMLElement
+          ? node.matches?.("input[type='checkbox']") && node
+            ? node
+            : node.querySelector?.("input[type='checkbox']")
+          : null;
+      if (checkboxInput) {
+        const uidFromCheckbox = findBlockUidFromCheckbox(checkboxInput);
+        if (uidFromCheckbox) return uidFromCheckbox;
+      }
+      if (node instanceof HTMLElement) {
+        const uidFromNode = findBlockUidFromElement(node);
+        if (uidFromNode) return uidFromNode;
+      }
+      if (fallbackTarget instanceof HTMLElement) {
+        const uidFromTarget = findBlockUidFromElement(fallbackTarget);
+        if (uidFromTarget) return uidFromTarget;
+      }
+      return null;
+    }
+
+    function noteTodoRemoval(uid) {
+      if (!uid) return;
+      const now = Date.now();
+      const recentClick = now - lastUserCheckboxInteraction <= USER_COMPLETION_BYPASS_MS;
+      if (now < pageLoadQuietUntil && !recentClick) {
+        logCompletionDebug("skip-todo-removal-quiet", {
+          uid,
+          now,
+          quietUntil: pageLoadQuietUntil,
+          recentClick,
+          lastUserCheckboxInteraction,
+        });
+        return;
+      }
+      const entry = completionPairs.get(uid) || {};
+      completionPairs.set(uid, { ...entry, removedAt: now });
+      logCompletionDebug("todo-removed", { uid, removedAt: now });
+    }
+
+    function noteDoneAddition(uid, checkbox) {
+      if (!uid) return;
+      const now = Date.now();
+      const recentClick = now - lastUserCheckboxInteraction <= USER_COMPLETION_BYPASS_MS;
+      if (now < pageLoadQuietUntil && !recentClick) {
+        logCompletionDebug("skip-done-add-quiet", {
+          uid,
+          now,
+          quietUntil: pageLoadQuietUntil,
+          recentClick,
+          lastUserCheckboxInteraction,
+        });
+        return;
+      }
+      const entry = completionPairs.get(uid) || {};
+      if (entry.removedAt && now - entry.removedAt <= COMPLETION_PAIR_WINDOW_MS) {
+        completionPairs.delete(uid);
+        logCompletionDebug("done-added-paired", { uid, removedAt: entry.removedAt, addedAt: now });
+        enqueueCompletion(uid, { checkbox });
+        return;
+      }
+      completionPairs.set(uid, { ...entry, addedAt: now });
+      logCompletionDebug("done-added-no-pair", { uid, addedAt: now });
+    }
+
+    function enqueueCompletion(uid, options = {}) {
+      if (!uid) return;
+      completionQueue.set(uid, options);
+      if (!completionQueueTimer && !completionQueueFlushInFlight) {
+        completionQueueTimer = setTimeout(flushCompletionQueue, 0);
+      }
+      logCompletionDebug("enqueue-completion", { uid, queueSize: completionQueue.size });
+    }
+
+    async function flushCompletionQueue() {
+      completionQueueTimer = null;
+      if (completionQueueFlushInFlight) return;
+      completionQueueFlushInFlight = true;
+      try {
+        logCompletionDebug("flush-queue-start", { size: completionQueue.size });
+        while (completionQueue.size > 0) {
+          const entries = Array.from(completionQueue.entries());
+          completionQueue.clear();
+          for (const [uid, opts] of entries) {
+            try {
+              await processTaskCompletion(uid, opts);
+            } catch (err) {
+              console.error("[RecurringTasks] completion handling failed", err);
+              logCompletionDebug("flush-queue-error", { uid, error: err?.message });
+            }
+          }
+        }
+      } finally {
+        completionQueueFlushInFlight = false;
+        logCompletionDebug("flush-queue-finish");
+      }
+    }
+
+    function sweepCompletionPairs(now = Date.now()) {
+      for (const [uid, entry] of completionPairs) {
+        const { removedAt, addedAt } = entry || {};
+        if (
+          (removedAt && now - removedAt > COMPLETION_PAIR_WINDOW_MS) ||
+          (addedAt && now - addedAt > COMPLETION_PAIR_WINDOW_MS)
+        ) {
+          completionPairs.delete(uid);
+          logCompletionDebug("pair-expired", { uid, removedAt, addedAt, now });
+        }
+      }
+    }
+
     function disconnectObserver() {
       if (!observer) return;
       try {
@@ -1397,14 +1568,16 @@ export default {
 
     function handleHashChange() {
       disconnectObserver();
+      pageLoadQuietUntil = Date.now() + PAGE_COMPLETION_GRACE_MS;
+      logCompletionDebug("hashchange", { quietUntil: pageLoadQuietUntil, graceMs: PAGE_COMPLETION_GRACE_MS });
       scheduleObserverRestart();
     }
 
-    if (typeof window !== "undefined") {
-      try {
-        window.__RecurringTasksCleanup?.();
-      } catch (_) {
-        // ignore cleanup errors from previous runs
+      if (typeof window !== "undefined") {
+        try {
+          window.__RecurringTasksCleanup?.();
+        } catch (_) {
+          // ignore cleanup errors from previous runs
       }
       window.__RecurringTasksCleanup = () => {
         window.removeEventListener("hashchange", handleHashChange);
@@ -1423,6 +1596,8 @@ export default {
         // remove child->props listeners
         document.removeEventListener("input", _handleAnyEdit, true);
         document.removeEventListener("blur", _handleAnyEdit, true);
+        document.removeEventListener("pointerdown", _onCheckboxPointer, true);
+        document.removeEventListener("change", _onCheckboxChange, true);
         clearAllPills();
         disconnectObserver();
       };
@@ -1435,13 +1610,19 @@ export default {
       const targetNode2 = document.getElementById("right-sidebar");
       if (!targetNode1 && !targetNode2) return;
 
+      pageLoadQuietUntil = Date.now() + PAGE_COMPLETION_GRACE_MS;
+      logCompletionDebug("observer-init", {
+        quietUntil: pageLoadQuietUntil,
+        graceMs: PAGE_COMPLETION_GRACE_MS,
+      });
+
       const obsConfig = {
         attributes: true,
         attributeFilter: ["class", "style", "open", "aria-expanded"],
         childList: true,
         subtree: true,
       };
-      const callback = async function (mutationsList, obs) {
+      const callback = function (mutationsList, obs) {
         for (const mutation of mutationsList) {
           if (mutation.type === "attributes") {
             const target = mutation.target;
@@ -1475,25 +1656,44 @@ export default {
             }
             continue;
           }
-          if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
+          const target = mutation.target instanceof HTMLElement ? mutation.target : null;
 
-          for (const node of mutation.addedNodes) {
-            if (!(node instanceof HTMLElement)) continue;
-            void decorateBlockPills(node);
+          if (mutation.removedNodes && mutation.removedNodes.length > 0) {
+            for (const node of mutation.removedNodes) {
+              if (!(node instanceof HTMLElement)) continue;
+              const todoHosts = [];
+              if (node.matches?.(".rm-checkbox.rm-todo")) todoHosts.push(node);
+              node.querySelectorAll?.(".rm-checkbox.rm-todo")?.forEach((el) => todoHosts.push(el));
+              for (const host of todoHosts) {
+                const uid = deriveUidFromMutationNode(host, target);
+                if (uid) {
+                  noteTodoRemoval(uid);
+                }
+              }
+            }
+          }
 
-            const inputs = node.matches?.(".check-container input")
-              ? [node]
-              : Array.from(node.querySelectorAll?.(".check-container input") || []);
+      if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
 
-            for (const input of inputs) {
-              if (!(input?.control?.checked || input?.checked)) continue;
-              const uid = findBlockUidFromCheckbox(input);
-              if (!uid) continue;
-              await processTaskCompletion(uid, { checkbox: input });
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        void decorateBlockPills(node);
+
+            const doneHosts = [];
+            if (node.matches?.(".rm-checkbox.rm-done")) doneHosts.push(node);
+            node.querySelectorAll?.(".rm-checkbox.rm-done")?.forEach((el) => doneHosts.push(el));
+
+            for (const host of doneHosts) {
+              const checkbox = host.querySelector?.("input[type='checkbox']") || null;
+              const uid = deriveUidFromMutationNode(host, target);
+              if (uid) {
+                noteDoneAddition(uid, checkbox);
+              }
             }
           }
         }
 
+        sweepCompletionPairs();
         sweepProcessed();
       };
 
@@ -1508,8 +1708,14 @@ export default {
     async function processTaskCompletion(uid, options = {}) {
       if (!uid) return null;
       if (processedMap.has(uid)) {
+        logCompletionDebug("skip-completion-duplicate", { uid });
         return null;
       }
+      logCompletionDebug("process-completion-start", {
+        uid,
+        fromQueue: !!options?.checkbox || false,
+        now: Date.now(),
+      });
       processedMap.set(uid, Date.now());
       const checkbox = options.checkbox || null;
       try {
@@ -1535,6 +1741,7 @@ export default {
         const now = Date.now();
         if (meta.processedTs && now - meta.processedTs < 4000) {
           processedMap.delete(uid);
+          logCompletionDebug("skip-completion-recent-meta", { uid, metaProcessed: meta.processedTs, now });
           return null;
         }
 
@@ -1560,11 +1767,13 @@ export default {
             repeatOverrides.delete(uid);
             void syncPillsForSurface(lastAttrSurface);
             activeDashboardController?.notifyBlockChange?.(uid);
+            logCompletionDebug("completion-one-off", { uid, processedAt: completion.processedAt });
             return { type: "one-off" };
           } catch (err) {
             console.error("[RecurringTasks] one-off completion failed", err);
             await revertBlockCompletion(block);
             processedMap.delete(uid);
+            logCompletionDebug("completion-one-off-error", { uid, error: err?.message });
             return null;
           }
         }
@@ -1573,6 +1782,7 @@ export default {
           const confirmed = await requestSpawnConfirmation(meta, set);
           if (!confirmed) {
             processedMap.delete(uid);
+            logCompletionDebug("skip-completion-user-cancel", { uid });
             return null;
           }
         }
@@ -1598,6 +1808,7 @@ export default {
         const setWithAdvance = { ...set, advanceFrom: advanceMode };
         const completion = await markCompleted(block, meta, setWithAdvance);
         processedMap.set(uid, completion.processedAt);
+        logCompletionDebug("completion-recurring-marked", { uid, processedAt: completion.processedAt });
 
         const { meta: resolvedMeta, block: resolvedBlock } = await resolveMetaAfterCompletion(
           snapshot,
@@ -1654,10 +1865,12 @@ export default {
         if (newUid) {
           activeDashboardController?.notifyBlockChange?.(newUid);
         }
+        logCompletionDebug("completion-recurring-spawned", { uid, nextUid: newUid, nextDue: nextDue?.toISOString?.() });
         return { type: "recurring", nextUid: newUid };
       } catch (err) {
         console.error("[RecurringTasks] error:", err);
         processedMap.delete(uid);
+        logCompletionDebug("completion-error", { uid, error: err?.message });
         return null;
       }
     }
