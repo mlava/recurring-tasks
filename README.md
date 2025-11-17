@@ -146,9 +146,9 @@ Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or
 
 Use the dashboard to triage overdue work, snooze tasks, or jump straight to the next daily note page without leaving Roam.
 
-### 🎨 Theme Compatibility (Beta)
+### 🎨 Theme Compatibility (Adaptive)
 
-Better Tasks samples colors from Roam’s active theme and applies a lightweight contrast layer so the dashboard and pills feel native in both light and dark modes. Because every graph can load different community themes, there may still be combinations that need tweaks. If you notice illegible text or mismatched backgrounds, please report the theme you’re using so we can fine‑tune the adaptive styling.
+Better Tasks samples colors from Roam’s active theme and applies a lightweight contrast layer so the dashboard and pills feel native in both light and dark modes. The adaptive styling now works with Roam Studio, CSS Dark Mode Toggle, Roam "Native" Dark and Blueprint light/dark themes; if you spot any illegible text or mismatched backgrounds in your graph, please report the theme so we can fine‑tune it.
 
 <p align="center">
 <img src="https://raw.githubusercontent.com/mlava/better-tasks/main/images/theming.gif"/>

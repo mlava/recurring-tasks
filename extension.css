@@ -234,13 +234,17 @@ body.bt-theme-dark .bt-task-menu__trigger {
     border-color: var(--bt-border);
 }
 
+.roam-lift-modal {
+    z-index: 19; /* above bt-dashboard (10) and izitoast (15) */
+}
+
 .bt-dashboard-host {
     position: fixed;
     top: 52px;
     right: 32px;
     height: calc(100vh - 96px);
     max-width: min(620px, calc(100vw - 48px));
-    z-index: 999;
+    z-index: 10;
     display: flex;
 }
 
@@ -290,27 +294,68 @@ body.bt-theme-dark .bt-task-menu__trigger {
 }
 
 .bt-dashboard__header-actions .bp3-button {
-    min-height: 28px;
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 6px;
     background: var(--bt-panel-bg);
     color: var(--bt-panel-text);
-    border: 1px solid var(--bt-border-strong, var(--bt-border));
+    border: 1px solid var(--bt-border, var(--bt-border));
     box-shadow: none;
 }
 
+.bt-dashboard__quick-add {
+    padding: 12px 20px 8px;
+    border-bottom: 1px solid var(--bt-border);
+}
+
 .bt-dashboard__controls {
-    padding: 12px 20px;
+    padding: 12px 20px 10px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
     border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-search-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.bt-quick-add {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.bt-quick-add__input {
+    flex: 1;
+    padding: 4px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--bt-border);
+    font-size: 13px;
+    background: var(--bt-panel-bg);
+    color: var(--bt-panel-text);
+}
+
+.bt-quick-add .bp3-button {
+    background: var(--bt-panel-bg);
+    color: var(--bt-panel-text);
+    border: 1px solid var(--bt-border);
+    box-shadow: none;
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 6px;
 }
 
 .bt-search {
     width: 100%;
     padding: 4px 6px;
+    font-size: 13px;
     border-radius: 8px;
     border: 1px solid var(--bt-border);
-    font-size: 13px;
     background: var(--bt-panel-bg);
     color: var(--bt-panel-text);
 }
@@ -628,6 +673,13 @@ body.bt-theme-dark #bt-dashboard-button.bt-dashboard-button--active {
 
 .bt-dashboard__footer-actions button {
     font-size: 12px;
+    min-height: 24px;
+    padding: 4px 8px;
+    background: var(--bt-panel-bg);
+    color: var(--bt-panel-text);
+    border: 1px solid var(--bt-border);
+    box-shadow: none;
+    border-radius: 6px;
 }
 
 /*

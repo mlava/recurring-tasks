@@ -635,6 +635,26 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
     dispatchFilters({ type: "toggle", section, value });
   };
 
+  const [quickText, setQuickText] = useState("");
+
+  const handleQuickAddSubmit = async () => {
+    const value = quickText.trim();
+    if (!value) return;
+    try {
+      await controller.quickAdd?.(value);
+      setQuickText("");
+    } catch (err) {
+      console.error("[BetterTasks] quick add failed", err);
+    }
+  };
+
+  const handleQuickAddKeyDown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleQuickAddSubmit();
+    }
+  };
+
   const handleRefresh = () => controller.refresh?.({ reason: "manual" });
 
   const headerRef = useCallback(
@@ -668,25 +688,43 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
         </div>
       </header>
 
+      <div className="bt-dashboard__quick-add">
+        <div className="bt-quick-add">
+          <input
+            type="text"
+            className="bt-quick-add__input"
+            placeholder="Add a Better Task"
+            value={quickText}
+            onChange={(e) => setQuickText(e.target.value)}
+            onKeyDown={handleQuickAddKeyDown}
+          />
+          <button type="button" className="bp3-button bp3-small" onClick={handleQuickAddSubmit}>
+            OK
+          </button>
+        </div>
+      </div>
+
       <div className="bt-dashboard__controls">
-        <input
-          type="text"
-          className="bt-search"
-          placeholder="Search tasks"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <div className="bt-grouping">
-          {GROUPING_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`bt-chip${grouping === option.value ? " bt-chip--active" : ""}`}
-              onClick={() => setGrouping(option.value)}
-            >
-              {option.label}
-            </button>
-          ))}
+        <div className="bt-search-row">
+          <input
+            type="text"
+            className="bt-search"
+            placeholder="Search tasks"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="bt-grouping">
+            {GROUPING_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={`bt-chip${grouping === option.value ? " bt-chip--active" : ""}`}
+                onClick={() => setGrouping(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -3170,6 +3170,126 @@ export default {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     }
 
+    function parseDateFromText(value, set) {
+      if (typeof value !== "string" || !value.trim()) return { date: null, text: null };
+      const original = value.trim();
+      const cleaned = stripTimeFromDateText(original);
+      let dt = parseRoamDate(cleaned) || parseRelativeDateText(cleaned, set.weekStartCode);
+      if (!dt && hasTimeOnlyHint(original)) {
+        dt = pickAnchorDateFromTimeHint(original, set);
+      }
+      if (!(dt instanceof Date) || Number.isNaN(dt.getTime())) return { date: null, text: null };
+      return { date: dt, text: formatDate(dt, set) };
+    }
+
+    async function createQuickTaskFromParsed(parsed, rawInput = "") {
+      if (!parsed) return false;
+      const set = S();
+      const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+      if (!title) return false;
+      const cleanedTitle = stripSchedulingFromTitle(title, parsed);
+      const todoString = normalizeToTodoMacro(cleanedTitle);
+
+      let repeatVal = "";
+      if (typeof parsed.repeatRule === "string" && parsed.repeatRule.trim()) {
+        const normalized = normalizeRepeatRuleText(parsed.repeatRule) || parsed.repeatRule.trim();
+        if (parseRuleText(normalized, set)) {
+          repeatVal = normalized;
+        }
+      }
+
+      const dueInfo = parseDateFromText(parsed.dueDateText || "", set);
+      const startInfo = parseDateFromText(parsed.startDateText || "", set);
+      const deferInfo = parseDateFromText(parsed.deferDateText || "", set);
+
+      const anchorDate = dueInfo.date || deferInfo.date || startInfo.date || todayLocal();
+      const targetPageUid = await chooseTargetPageUid(anchorDate, { page: { uid: null } }, set);
+      const newUid = window.roamAlphaAPI.util.generateUID();
+      await createBlock(targetPageUid, 0, todoString, newUid);
+
+      const props = { rt: { id: shortId(), tz: set.timezone } };
+      await updateBlockProps(newUid, props);
+
+      if (repeatVal) await ensureChildAttrForType(newUid, "repeat", repeatVal, set.attrNames);
+      else await removeChildAttrsForType(newUid, "repeat", set.attrNames);
+      if (dueInfo.text) await ensureChildAttrForType(newUid, "due", dueInfo.text, set.attrNames);
+      else await removeChildAttrsForType(newUid, "due", set.attrNames);
+      if (startInfo.text) await ensureChildAttrForType(newUid, "start", startInfo.text, set.attrNames);
+      else await removeChildAttrsForType(newUid, "start", set.attrNames);
+      if (deferInfo.text) await ensureChildAttrForType(newUid, "defer", deferInfo.text, set.attrNames);
+      else await removeChildAttrsForType(newUid, "defer", set.attrNames);
+
+      scheduleSurfaceSync(set.attributeSurface);
+      activeDashboardController?.notifyBlockChange?.(newUid, { bypassFilters: true });
+      return true;
+    }
+
+    async function createQuickTaskFromPrompt(promptResult) {
+      if (!promptResult) return false;
+      const set = S();
+      const attrNames = set.attrNames;
+      const title =
+        (typeof promptResult.taskText === "string" && promptResult.taskText.trim()) ||
+        (typeof promptResult.taskTextRaw === "string" && promptResult.taskTextRaw.trim()) ||
+        "";
+      if (!title) {
+        toast("Task text is required.");
+        return false;
+      }
+      const cleanedTitle = stripSchedulingFromTitle(title, null);
+      const todoString = normalizeToTodoMacro(cleanedTitle);
+
+      const repeatVal = promptResult.repeat || "";
+      if (repeatVal && !parseRuleText(repeatVal, set)) {
+        toast("Unable to understand that repeat rule.");
+        return false;
+      }
+
+      const dueDate =
+        promptResult.dueDate instanceof Date && !Number.isNaN(promptResult.dueDate.getTime())
+          ? promptResult.dueDate
+          : promptResult.due
+            ? parseRoamDate(promptResult.due)
+            : null;
+      const startDate =
+        promptResult.startDate instanceof Date && !Number.isNaN(promptResult.startDate.getTime())
+          ? promptResult.startDate
+          : promptResult.start
+            ? parseRoamDate(promptResult.start)
+            : null;
+      const deferDate =
+        promptResult.deferDate instanceof Date && !Number.isNaN(promptResult.deferDate.getTime())
+          ? promptResult.deferDate
+          : promptResult.defer
+            ? parseRoamDate(promptResult.defer)
+            : null;
+
+      const dueStr = dueDate ? formatDate(dueDate, set) : null;
+      const startStr = startDate ? formatDate(startDate, set) : null;
+      const deferStr = deferDate ? formatDate(deferDate, set) : null;
+
+      const anchorDate = dueDate || deferDate || startDate || todayLocal();
+      const targetPageUid = await chooseTargetPageUid(anchorDate, { page: { uid: null } }, set);
+      const newUid = window.roamAlphaAPI.util.generateUID();
+      await createBlock(targetPageUid, 0, todoString, newUid);
+
+      const props = { rt: { id: shortId(), tz: set.timezone } };
+      await updateBlockProps(newUid, { rt: props.rt });
+
+      if (repeatVal) await ensureChildAttrForType(newUid, "repeat", repeatVal, attrNames);
+      else await removeChildAttrsForType(newUid, "repeat", attrNames);
+      if (dueStr) await ensureChildAttrForType(newUid, "due", dueStr, attrNames);
+      else await removeChildAttrsForType(newUid, "due", attrNames);
+      if (startStr) await ensureChildAttrForType(newUid, "start", startStr, attrNames);
+      else await removeChildAttrsForType(newUid, "start", attrNames);
+      if (deferStr) await ensureChildAttrForType(newUid, "defer", deferStr, attrNames);
+      else await removeChildAttrsForType(newUid, "defer", attrNames);
+
+      scheduleSurfaceSync(set.attributeSurface);
+      activeDashboardController?.notifyBlockChange?.(newUid, { bypassFilters: true });
+      return true;
+    }
+
     // === Merged + extended parser ===
     function parseRuleText(s, options = {}) {
       if (!s) return null;
@@ -6197,6 +6317,7 @@ export default {
         open,
         close,
         toggle,
+        quickAdd,
         toggleTask,
         snoozeTask,
         openBlock,
@@ -6273,6 +6394,58 @@ export default {
             refreshPromise = null;
           });
         return refreshPromise;
+      }
+
+      async function quickAdd(inputText) {
+        const rawInput = typeof inputText === "string" ? inputText : "";
+        const trimmed = rawInput.trim();
+        if (!trimmed) {
+          toast("Enter some task text.");
+          return;
+        }
+        const aiSettings = getAiSettings();
+        const aiEnabled = isAiEnabled(aiSettings);
+        let parsedTask = null;
+        if (aiEnabled) {
+          const pending = showPersistentToast("Parsing task with AI\u2026");
+          let aiResult = null;
+          try {
+            aiResult = await parseTaskWithOpenAI(trimmed, aiSettings);
+          } catch (err) {
+            console.warn("[BetterTasks] AI parsing threw in quickAdd", err);
+            aiResult = { ok: false, error: err };
+          } finally {
+            hideToastInstance(pending);
+          }
+          if (aiResult?.ok) {
+            parsedTask = aiResult.task;
+          } else {
+            console.warn("[BetterTasks] AI parsing unavailable in quickAdd", aiResult?.error || aiResult?.reason);
+            toast("AI parsing unavailable, falling back to manual entry.");
+          }
+        }
+
+        if (parsedTask) {
+          const created = await createQuickTaskFromParsed(parsedTask, trimmed);
+          if (created) {
+            await refresh({ reason: "quick-add" });
+            return;
+          }
+          toast("Couldn't create task from AI result; try manual.");
+        }
+
+        const promptResult = await promptForRepeatAndDue({
+          includeTaskText: true,
+          forceTaskInput: true,
+          taskText: trimmed,
+        });
+        if (!promptResult) return;
+        const createdManual = await createQuickTaskFromPrompt(promptResult);
+        if (createdManual) {
+          await refresh({ reason: "quick-add" });
+        } else {
+          toast("Couldn't create task from input.");
+        }
       }
 
       function ensureContainer() {

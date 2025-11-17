@@ -51,10 +51,10 @@ Interactive task manager view
 - Live sync between dashboard and inline pills.
 - First-day-of-week setting.
 - Ability to add/remove repeat/start/defer/due attributes directly from the dashboard menu.
+- Adaptive theming for Roam light/dark and popular theme packs (ongoing polish).
 
 **Pending**
 
-- Improve adaptive theming for Roam themes (light/dark and popular theme packs).
 - Add **project attribute** support.
 - Add **context attribute** support.
 - Introduce **priority** and **energy** attributes.
@@ -65,7 +65,6 @@ Interactive task manager view
 ## Phase 5 — Cleanup & Release (⏳ Pending)
 
 - Final docs/README/Roam Depot listing pass.
-- Refactor internal namespace from `rt-` → `bt-`.
 - Broader validation via user testing and feedback.
 - Final consistency pass on attribute parsing, writing, date handling, and pill sync.
 
