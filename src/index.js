@@ -34,6 +34,7 @@ const WEEK_START_OPTIONS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursda
 const PARENT_WRITE_DELAY_MS = 120;
 const TOAST_HIDE_DELAY_MS = 120;
 const DASHBOARD_TOPBAR_BUTTON_ID = "bt-dashboard-button";
+const DASHBOARD_TOPBAR_SPACER_ID = "bt-dashboard-button-spacer";
 
 let lastAttrNames = null;
 let activeDashboardController = null;
@@ -6904,28 +6905,50 @@ function keywordIntervalFromText(text) {
 function ensureDashboardTopbarButton(retry = true) {
   if (typeof document === "undefined") return;
   if (!activeDashboardController) return;
-  if (document.getElementById(DASHBOARD_TOPBAR_BUTTON_ID)) return;
-  const button = document.createElement("span");
-  button.id = DASHBOARD_TOPBAR_BUTTON_ID;
-  button.className = "bp3-button bp3-minimal bp3-small bp3-icon-form";
-  button.setAttribute("role", "button");
-  button.setAttribute("title", "Better Tasks Dashboard");
-  button.setAttribute("aria-label", "Better Tasks Dashboard");
-  button.addEventListener("click", () => activeDashboardController?.toggle());
-  const placed = insertDashboardButton(button);
+
+  let button = document.getElementById(DASHBOARD_TOPBAR_BUTTON_ID);
+  if (!button) {
+    button = document.createElement("span");
+    button.id = DASHBOARD_TOPBAR_BUTTON_ID;
+    button.className = "bp3-button bp3-minimal bp3-small bp3-icon-form";
+    button.setAttribute("role", "button");
+    button.setAttribute("title", "Better Tasks Dashboard");
+    button.setAttribute("aria-label", "Better Tasks Dashboard");
+    button.addEventListener("click", () => activeDashboardController?.toggle());
+  }
+
+  let spacer = document.getElementById(DASHBOARD_TOPBAR_SPACER_ID);
+  if (!spacer) {
+    spacer = document.createElement("div");
+    spacer.id = DASHBOARD_TOPBAR_SPACER_ID;
+    spacer.className = "rm-topbar__spacer-sm";
+  }
+
+  const placed = insertDashboardButton(button, spacer);
   if (!placed && retry) {
     setTimeout(() => ensureDashboardTopbarButton(false), 600);
   }
 }
 
-function insertDashboardButton(button) {
+function insertDashboardButton(button, spacer) {
+  const helpButtonWrapper = document.querySelector(".rm-topbar__help");
+  if (helpButtonWrapper?.parentNode) {
+    const parent = helpButtonWrapper.parentNode;
+    const afterHelp = helpButtonWrapper.nextSibling;
+    parent.insertBefore(spacer, afterHelp);
+    parent.insertBefore(button, afterHelp);
+    return true;
+  }
+
   const sidebarBtn = document.querySelector(".rm-open-left-sidebar-btn");
   if (sidebarBtn?.parentNode) {
-    sidebarBtn.parentNode.insertBefore(button, sidebarBtn.nextSibling);
+    sidebarBtn.parentNode.insertBefore(spacer, sidebarBtn.nextSibling);
+    sidebarBtn.parentNode.insertBefore(button, spacer.nextSibling);
     return true;
   }
   const topbar = document.querySelector(".rm-topbar");
   if (topbar) {
+    topbar.appendChild(spacer);
     topbar.appendChild(button);
     return true;
   }
@@ -6934,6 +6957,7 @@ function insertDashboardButton(button) {
   );
   const row = mainTopbar?.childNodes?.[1];
   if (row?.parentNode) {
+    row.parentNode.insertBefore(spacer, row);
     row.parentNode.insertBefore(button, row);
     return true;
   }
@@ -6944,6 +6968,8 @@ function removeDashboardTopbarButton() {
   if (typeof document === "undefined") return;
   const existing = document.getElementById(DASHBOARD_TOPBAR_BUTTON_ID);
   if (existing) existing.remove();
+  const spacer = document.getElementById(DASHBOARD_TOPBAR_SPACER_ID);
+  if (spacer) spacer.remove();
 }
 
 function observeTopbarButton() {

@@ -536,8 +536,15 @@ body.bt-theme-dark .bt-task-menu__item--danger {
 }
 
 #bt-dashboard-button.bt-dashboard-button--active {
-    background: var(--bt-pill-bg);
+    background: #bef5be; /* pale green highlight */
+    color: #0f4b2a;
     border-radius: 6px;
+}
+
+body.bp3-dark #bt-dashboard-button.bt-dashboard-button--active,
+body.bt-theme-dark #bt-dashboard-button.bt-dashboard-button--active {
+    background: rgba(46, 204, 113, 0.35);
+    color: #bef5be;
 }
 
 .bt-empty,
