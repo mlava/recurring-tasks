@@ -1441,54 +1441,120 @@ export default {
         subtree: true,
       };
       const callback = async function (mutationsList, obs) {
+        sweepProcessed();
+
+        // Ensure roots still exist; reconnect if Roam re-renders the main areas.
+        if (!document.body.contains(targetNode1) || !document.body.contains(targetNode2)) {
+          try {
+            obs.disconnect();
+          } catch (err) {
+            console.warn("[BetterTasks] observer disconnect failed", err);
+          }
+          // Re-grab nodes and restart
+          targetNode1 = document.getElementsByClassName("roam-main")[0];
+          targetNode2 = document.getElementById("right-sidebar");
+          if (targetNode1 || targetNode2) {
+            obs.observe(targetNode1, obsConfig);
+            if (targetNode2) obs.observe(targetNode2, obsConfig);
+          }
+          return;
+        }
+
+        // 1️⃣ First pass: track blocks where a TODO checkbox was removed.
+        const todoRemovedByBlockUid = new Set();
+
         for (const mutation of mutationsList) {
+          if (mutation.type !== "childList") continue;
+          if (!mutation.removedNodes || mutation.removedNodes.length === 0) continue;
+
+          for (const node of mutation.removedNodes) {
+            if (!(node instanceof HTMLElement)) continue;
+
+            // Look for a TODO checkbox in the removed node subtree.
+            const todoCheckboxSpan =
+              node.matches(".rm-checkbox.rm-todo")
+                ? node
+                : node.querySelector?.(".rm-checkbox.rm-todo");
+
+            if (!todoCheckboxSpan) continue;
+
+            const blockEl =
+              todoCheckboxSpan.closest(".rm-block-main") ||
+              mutation.target?.closest?.(".rm-block-main") ||
+              todoCheckboxSpan.closest(".roam-block") ||
+              mutation.target?.closest?.(".roam-block");
+
+            if (!blockEl) continue;
+
+            const uid = findBlockUidFromElement(blockEl);
+            if (uid) {
+              todoRemovedByBlockUid.add(uid);
+            }
+          }
+        }
+
+        // 2️⃣ Second pass: handle attributes & added DONE checkboxes.
+        for (const mutation of mutationsList) {
+          // Existing attributes branch (pills when editing the same DOM node)
           if (mutation.type === "attributes") {
             const target = mutation.target;
-            if (!(target instanceof HTMLElement)) {
-              continue;
-            }
-            const attrName = mutation.attributeName;
-            const isCaret =
-              target.classList?.contains("rm-caret") ||
-              target.classList?.contains("rm-caret-container");
-            const isChildContainer =
-              target.classList?.contains("rm-block__children") ||
-              target.classList?.contains("rm-block-children");
-            if (!isCaret && !isChildContainer && attrName !== "open") {
-              continue;
-            }
-            let main = null;
-            if (isCaret) {
-              main = target.closest?.(".rm-block-main") || null;
-            } else if (isChildContainer) {
-              main = findMainForChildrenContainer(target);
-            } else if (attrName === "open") {
-              if (target.classList?.contains("rm-block-main")) {
-                main = target;
-              } else if (target.classList?.contains("roam-block-container") || target.classList?.contains("roam-block")) {
-                main = target.querySelector?.(":scope > .rm-block-main") || null;
+            if (target instanceof HTMLElement) {
+              const main =
+                target.closest(".rm-block-main") || target.closest(".roam-block");
+              if (main) {
+                void decorateBlockPills(main);
               }
-            }
-            if (main) {
-              schedulePillRefresh(main, null, 40);
             }
             continue;
           }
+
+          if (mutation.type !== "childList") continue;
           if (!mutation.addedNodes || mutation.addedNodes.length === 0) continue;
 
           for (const node of mutation.addedNodes) {
             if (!(node instanceof HTMLElement)) continue;
+
+            // Always (re)decorate pills for any newly-added block subtree.
             void decorateBlockPills(node);
 
-            const inputs = node.matches?.(".check-container input")
+            // Find any checkbox inputs under this new subtree.
+            const inputs = node.matches(".check-container input[type='checkbox']")
               ? [node]
-              : Array.from(node.querySelectorAll?.(".check-container input") || []);
+              : Array.from(
+                node.querySelectorAll?.(
+                  ".check-container input[type='checkbox']"
+                ) || []
+              );
 
             for (const input of inputs) {
-              if (!(input?.control?.checked || input?.checked)) continue;
-              const uid = findBlockUidFromCheckbox(input);
+              const checkbox = /** @type {HTMLInputElement} */ (input);
+
+              // We only care about checked checkboxes (DONE).
+              if (!(checkbox.checked || checkbox.control?.checked)) continue;
+
+              const blockEl =
+                checkbox.closest(".rm-block-main") ||
+                node.closest(".rm-block-main") ||
+                checkbox.closest(".roam-block") ||
+                node.closest(".roam-block");
+
+              if (!blockEl) continue;
+
+              const uid = findBlockUidFromElement(blockEl);
               if (!uid) continue;
-              await processTaskCompletion(uid, { checkbox: input });
+
+              // 🔑 Critical gating: only treat this as a new completion if
+              // we saw a TODO removed for this block in this batch.
+              if (!todoRemovedByBlockUid.has(uid)) {
+                // Most likely page load / hydration of an already-DONE task.
+                continue;
+              }
+
+              try {
+                await processTaskCompletion(uid, { checkbox });
+              } catch (err) {
+                console.error("[BetterTasks] processTaskCompletion failed", err);
+              }
             }
           }
         }
@@ -3945,33 +4011,43 @@ export default {
         */
 
     function toast(msg) {
-      // ensureToastStyles();
-      iziToast.show({
-        theme: 'light',
-        color: 'black',
-        message: msg,
-        class: 'betterTasks',
-        position: 'center',
-        close: false,
-        timeout: 3000,
-        closeOnClick: true,
-        displayMode: 2,
-      });
+      if (!msg) return;
+      try {
+        // Ensure only one toast is visible at a time
+        iziToast.destroy();
+
+        iziToast.show({
+          theme: "light",
+          color: "black",
+          message: String(msg),
+          class: "betterTasks",
+          position: "center",
+          close: false,
+          timeout: 3000,
+          closeOnClick: true,
+          displayMode: 1, // single-instance behaviour
+        });
+      } catch (err) {
+        console.warn("[BetterTasks] toast failed", err);
+      }
     }
 
     function showPersistentToast(msg) {
       try {
+        // Clear any existing toasts (including older AI-status toasts)
+        iziToast.destroy();
+
         return iziToast.show({
           theme: "light",
           color: "black",
-          message: msg,
+          message: String(msg),
           class: "betterTasks",
           position: "center",
           id: "betterTasks-ai-pending",
           close: true,
           timeout: false,
           closeOnClick: true,
-          displayMode: 2,
+          displayMode: 1,
         });
       } catch (err) {
         console.warn("[BetterTasks] showPersistentToast failed", err);
@@ -6965,11 +7041,14 @@ function syncDashboardThemeVars() {
   const body = document.body;
   const root = document.documentElement;
   if (!body || !root) return;
+
   const computed = window.getComputedStyle(body);
+
   const systemPrefersDark =
     typeof window !== "undefined" &&
     window.matchMedia &&
     window.matchMedia("(prefers-color-scheme: dark)").matches;
+
   const explicitDark =
     body.classList.contains("bp3-dark") ||
     /dark/i.test(body.className) ||
@@ -6979,8 +7058,9 @@ function syncDashboardThemeVars() {
     ".roam-main",
     ".roam-body .bp3-card",
     ".roam-body",
-    "#app"
+    "#app",
   ]);
+
   const baseSurface = pickColorValue(
     explicitDark ? "#1f2428" : "#ffffff",
     computed.getPropertyValue("--bt-surface"),
@@ -6989,35 +7069,40 @@ function syncDashboardThemeVars() {
     layoutBg,
     computed.backgroundColor
   );
+
   if (baseSurface === (lastThemeSample?.surface || null)) {
-    // no change; avoid flicker
+    // No change; avoid flicker
     return;
   }
+
+  const panelRgb = parseColorToRgb(baseSurface);
+  const derivedDark = panelRgb ? computeLuminance(panelRgb) < 0.45 : null;
+  const finalIsDark = explicitDark || (derivedDark != null ? derivedDark : systemPrefersDark);
+
   const textColor = pickColorValue(
     finalIsDark ? "#f5f8fa" : "#111111",
     computed.getPropertyValue("--bt-text"),
     computed.getPropertyValue("--bp3-text-color"),
     computed.color
   );
+
   const borderColor = pickColorValue(
     finalIsDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)",
     computed.getPropertyValue("--bt-border-color"),
     computed.getPropertyValue("--bp3-border-color"),
     computed.getPropertyValue("--border-color")
   );
+
   const mutedColor = pickColorValue(
     finalIsDark ? "rgba(255,255,255,0.65)" : "rgba(0,0,0,0.6)",
     computed.getPropertyValue("--bt-muted-color"),
     computed.getPropertyValue("--text-color-muted")
   );
+
   const pillBg = pickColorValue(
     finalIsDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)",
     computed.getPropertyValue("--bt-pill-bg")
   );
-
-  const panelRgb = parseColorToRgb(baseSurface);
-  const derivedDark = panelRgb ? computeLuminance(panelRgb) < 0.45 : null;
-  const finalIsDark = explicitDark || (derivedDark != null ? derivedDark : systemPrefersDark);
 
   body.classList.toggle("bt-theme-dark", finalIsDark);
   body.classList.toggle("bt-theme-light", !finalIsDark);
@@ -7031,6 +7116,7 @@ function syncDashboardThemeVars() {
   root.style.setProperty("--bt-border-strong", borderStrong);
   root.style.setProperty("--bt-muted", mutedColor);
   root.style.setProperty("--bt-pill-bg", pillBg);
+
   lastThemeSample = { surface: baseSurface, dark: finalIsDark };
 }
 
