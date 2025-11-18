@@ -383,9 +383,7 @@ body.bt-theme-dark .bt-task-menu__trigger {
 
 .bt-dashboard__filters {
     padding: 8px 20px 4px;
-    overflow-y: auto;
-    max-height: 220px;
-}
+  }
 
 .bt-filter-row {
     margin-bottom: 6px;
@@ -396,12 +394,64 @@ body.bt-theme-dark .bt-task-menu__trigger {
     width: 90px;
     font-size: 12px;
     color: var(--bt-muted);
+    text-transform: capitalize;
 }
 
 .bt-filter-row__chips {
     display: inline-flex;
     flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bt-filters-toggle {
+    border: none;
+    background: transparent;
+    color: var(--bt-panel-text);
+    font: inherit;
+    padding: 4px 0;
+    cursor: pointer;
+    text-align: left;
+}
+
+.bt-filters-grid-cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px 16px;
+    padding-top: 6px;
+}
+.bt-filters-col {
+    display: flex;
+    flex-direction: column;
     gap: 6px;
+}
+.bt-filters-col--full {
+    grid-column: 1 / -1;
+}
+
+.bt-filter-text-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    padding: 4px 0 8px;
+}
+
+.bt-filter-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--bt-panel-text);
+    font-weight: 400;
+}
+
+.bt-filter-text input {
+    width: 100%;
+    padding: 4px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--bt-border);
+    background: var(--bt-panel-bg);
+    color: var(--bt-panel-text);
+    font-size: 12px;
 }
 
 .bt-dashboard__content {
@@ -626,6 +676,14 @@ body.bt-theme-dark .bt-task-menu__trigger {
 
 .bt-task-menu__item:hover {
     background: rgba(0, 0, 0, 0.06);
+}
+
+.bt-task-menu__separator {
+    padding: 4px 8px 2px;
+    font-size: 11px;
+    color: var(--bt-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 body.bp3-dark .bt-task-menu__item:hover,

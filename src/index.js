@@ -7,6 +7,11 @@ const DEFAULT_START_ATTR = "BT_attrStart";
 const DEFAULT_DEFER_ATTR = "BT_attrDefer";
 const DEFAULT_DUE_ATTR = "BT_attrDue";
 const DEFAULT_COMPLETED_ATTR = "BT_attrCompleted";
+const DEFAULT_PROJECT_ATTR = "BT_attrProject";
+const DEFAULT_WAITING_FOR_ATTR = "BT_attrWaitingFor";
+const DEFAULT_CONTEXT_ATTR = "BT_attrContext";
+const DEFAULT_PRIORITY_ATTR = "BT_attrPriority";
+const DEFAULT_ENERGY_ATTR = "BT_attrEnergy";
 const ADVANCE_ATTR = "BT_attrAdvance";
 const INSTALL_TOAST_KEY = "rt-intro-toast";
 const AI_MODE_SETTING = "bt-ai-mode";
@@ -151,6 +156,36 @@ export default {
           name: "Completed attribute name",
           description: "Label written when a recurring/scheduled task is completed",
           action: { type: "input", placeholder: DEFAULT_COMPLETED_ATTR, onChange: handleAttributeNameChange },
+        },
+        {
+          id: "bt-attr-project",
+          name: "Project attribute name",
+          description: "Label for project attribute (child block)",
+          action: { type: "input", placeholder: "BT_attrProject", onChange: handleAttributeNameChange },
+        },
+        {
+          id: "bt-attr-waitingFor",
+          name: "Waiting-for attribute name",
+          description: "Label for waiting-for attribute (child block)",
+          action: { type: "input", placeholder: "BT_attrWaitingFor", onChange: handleAttributeNameChange },
+        },
+        {
+          id: "bt-attr-context",
+          name: "Context attribute name",
+          description: "Label for context/tags attribute (child block)",
+          action: { type: "input", placeholder: "BT_attrContext", onChange: handleAttributeNameChange },
+        },
+        {
+          id: "bt-attr-priority",
+          name: "Priority attribute name",
+          description: "Label for priority attribute (child block)",
+          action: { type: "input", placeholder: "BT_attrPriority", onChange: handleAttributeNameChange },
+        },
+        {
+          id: "bt-attr-energy",
+          name: "Energy attribute name",
+          description: "Label for energy attribute (child block)",
+          action: { type: "input", placeholder: "BT_attrEnergy", onChange: handleAttributeNameChange },
         },
         {
           id: "rt-confirm",
@@ -923,11 +958,13 @@ export default {
     const COMPLETION_PAIR_WINDOW_MS = 1200;
     const USER_COMPLETION_BYPASS_MS = 2200;
     const COMPLETION_STALE_WINDOW_MS = 60_000;
+    const NAV_COMPLETION_BLOCK_MS = 5000;
     const repeatOverrides = new Map();
     const invalidRepeatToasted = new Set();
     const invalidDueToasted = new Set();
     const deletingChildAttrs = new Set();
     let pageLoadQuietUntil = 0;
+    let lastNavigationAt = Date.now();
     let lastUserCheckboxInteraction = 0;
     const PAGE_COMPLETION_GRACE_MS = 1800;
 
@@ -1306,9 +1343,94 @@ export default {
       if (!(event?.target instanceof HTMLElement)) return;
       if (!event.target.matches?.(checkboxInteractionSelectors)) return;
       markUserCheckboxInteraction();
+      const host = event.target.closest(".rm-checkbox");
+      if (!host) return;
+      const uid = deriveUidFromMutationNode(host, null);
+      if (!uid) return;
+      const checkbox = host.querySelector?.("input[type='checkbox']") || null;
+      // Defer to ensure class updates (rm-todo -> rm-done) have been applied
+      setTimeout(() => {
+        if (!host.classList?.contains("rm-done")) return;
+        noteTodoRemoval(uid);
+        enqueueCompletion(uid, { checkbox, userInitiated: true, detectedAt: Date.now() });
+      }, 0);
+    };
+    const _onCmdEnterKey = (event) => {
+      const isCmdEnter = (event.metaKey || event.ctrlKey) && event.key === "Enter";
+      if (!isCmdEnter) return;
+      if (!(event?.target instanceof HTMLElement)) return;
+      const host =
+        event.target.closest?.(".rm-block-main") ||
+        event.target.closest?.(".roam-block-container, .roam-block") ||
+        null;
+      const initialCheckbox =
+        host?.querySelector?.(":scope .rm-checkbox") || host?.querySelector?.(".rm-checkbox") || null;
+      const initialChecked = !!initialCheckbox?.querySelector?.("input[type='checkbox']")?.checked;
+      const initialDoneClass = !!initialCheckbox?.classList?.contains("rm-done");
+      const uid =
+        deriveUidFromMutationNode(initialCheckbox || host, host) || findBlockUidFromElement(host);
+      if (!uid) return;
+      const initialMacroDone = /\{\{\s*\[\[done\]\]\s*\}\}/i.test(event.target.value || host?.textContent || "");
+      const initialIsDone = initialChecked || initialDoneClass || initialMacroDone;
+      markUserCheckboxInteraction();
+
+      const findCheckbox = () => {
+        const container =
+          (host && host.isConnected && host) ||
+          document.querySelector?.(`.rm-block-main[data-uid='${uid}']`) ||
+          document.querySelector?.(`.roam-block[data-uid='${uid}']`) ||
+          null;
+        const input =
+          container?.querySelector?.(":scope .rm-checkbox input[type='checkbox']") ||
+          container?.querySelector?.(".rm-checkbox input[type='checkbox']") ||
+          null;
+        if (!input) return null;
+        const checkboxHost = input.closest?.(".rm-checkbox") || null;
+        return { input, checkboxHost };
+      };
+
+      const attemptEnqueue = (tries = 0) => {
+        const found = findCheckbox();
+        const checkboxHost = found?.checkboxHost || null;
+        const input = found?.input || null;
+        const isChecked = input?.checked === true;
+        const isDoneClass = checkboxHost?.classList?.contains("rm-done");
+        if ((isChecked || isDoneClass) && !initialIsDone) {
+          noteTodoRemoval(uid);
+          enqueueCompletion(uid, { checkbox: input, userInitiated: true, detectedAt: Date.now() });
+          return;
+        }
+        if (tries < 20) {
+          setTimeout(() => attemptEnqueue(tries + 1), 50);
+        }
+      };
+
+      // Roam flips classes/checked state after the key event; poll briefly for DONE/checked.
+      setTimeout(() => attemptEnqueue(0), 20);
+
+      // Fallback: poll the block text for DONE macro in case no checkbox renders (edit mode).
+      const pollForDoneMacro = async (tries = 0) => {
+        try {
+          const block = await getBlock(uid);
+          const text = block?.string || "";
+          const toggledToDone = /\{\{\s*\[\[done\]\]\s*\}\}/i.test(text);
+          if (toggledToDone && !initialIsDone) {
+            noteTodoRemoval(uid);
+            enqueueCompletion(uid, { checkbox: null, userInitiated: true, detectedAt: Date.now() });
+            return;
+          }
+        } catch (_) {
+          // ignore read failures
+        }
+        if (tries < 10) {
+          setTimeout(() => pollForDoneMacro(tries + 1), 80);
+        }
+      };
+      setTimeout(() => pollForDoneMacro(0), 60);
     };
     document.addEventListener("pointerdown", _onCheckboxPointer, true);
     document.addEventListener("change", _onCheckboxChange, true);
+    document.addEventListener("keydown", _onCmdEnterKey, true);
 
     function normalizeUid(raw) {
       if (!raw) return null;
@@ -1485,8 +1607,14 @@ export default {
       if (!uid) return;
       const now = Date.now();
       const recentClick = now - lastUserCheckboxInteraction <= USER_COMPLETION_BYPASS_MS;
-      const userInitiated = recentClick;
-      if (now < pageLoadQuietUntil && !recentClick) {
+      const entry = completionPairs.get(uid) || {};
+      const pairedRemoval =
+        entry.removedAt && now - entry.removedAt <= COMPLETION_PAIR_WINDOW_MS;
+      const navWindow = lastNavigationAt && now - lastNavigationAt <= NAV_COMPLETION_BLOCK_MS;
+      const quietWindow = now < pageLoadQuietUntil;
+      const userInitiated =
+        recentClick || (pairedRemoval && !quietWindow && !navWindow);
+      if (now < pageLoadQuietUntil && !userInitiated) {
         logCompletionDebug("skip-done-add-quiet", {
           uid,
           now,
@@ -1496,7 +1624,6 @@ export default {
         });
         return;
       }
-      const entry = completionPairs.get(uid) || {};
       if (entry.removedAt && now - entry.removedAt <= COMPLETION_PAIR_WINDOW_MS) {
         completionPairs.delete(uid);
         logCompletionDebug("done-added-paired", { uid, removedAt: entry.removedAt, addedAt: now });
@@ -1572,8 +1699,13 @@ export default {
 
     function handleHashChange() {
       disconnectObserver();
-      pageLoadQuietUntil = Date.now() + PAGE_COMPLETION_GRACE_MS;
-      logCompletionDebug("hashchange", { quietUntil: pageLoadQuietUntil, graceMs: PAGE_COMPLETION_GRACE_MS });
+      lastNavigationAt = Date.now();
+      pageLoadQuietUntil = lastNavigationAt + PAGE_COMPLETION_GRACE_MS;
+      logCompletionDebug("hashchange", {
+        quietUntil: pageLoadQuietUntil,
+        graceMs: PAGE_COMPLETION_GRACE_MS,
+        navigationAt: lastNavigationAt,
+      });
       scheduleObserverRestart();
     }
 
@@ -1602,6 +1734,7 @@ export default {
         document.removeEventListener("blur", _handleAnyEdit, true);
         document.removeEventListener("pointerdown", _onCheckboxPointer, true);
         document.removeEventListener("change", _onCheckboxChange, true);
+        document.removeEventListener("keydown", _onCmdEnterKey, true);
         clearAllPills();
         disconnectObserver();
       };
@@ -1614,15 +1747,18 @@ export default {
       const targetNode2 = document.getElementById("right-sidebar");
       if (!targetNode1 && !targetNode2) return;
 
-      pageLoadQuietUntil = Date.now() + PAGE_COMPLETION_GRACE_MS;
+      lastNavigationAt = Date.now();
+      pageLoadQuietUntil = lastNavigationAt + PAGE_COMPLETION_GRACE_MS;
       logCompletionDebug("observer-init", {
         quietUntil: pageLoadQuietUntil,
         graceMs: PAGE_COMPLETION_GRACE_MS,
+        navigationAt: lastNavigationAt,
       });
 
       const obsConfig = {
         attributes: true,
         attributeFilter: ["class", "style", "open", "aria-expanded"],
+        attributeOldValue: true,
         childList: true,
         subtree: true,
       };
@@ -1634,6 +1770,19 @@ export default {
               continue;
             }
             const attrName = mutation.attributeName;
+            if (attrName === "class" && target.classList?.contains("rm-checkbox")) {
+              const wasTodo = (mutation.oldValue || "").includes("rm-todo");
+              const isDone = target.classList.contains("rm-done");
+              if (wasTodo && isDone) {
+                const uid = deriveUidFromMutationNode(target, null);
+                if (uid) {
+                  const checkbox = target.querySelector?.("input[type='checkbox']") || null;
+                  noteTodoRemoval(uid);
+                  enqueueCompletion(uid, { checkbox, userInitiated: true, detectedAt: Date.now() });
+                  continue;
+                }
+              }
+            }
             const isCaret =
               target.classList?.contains("rm-caret") ||
               target.classList?.contains("rm-caret-container");
@@ -1745,6 +1894,20 @@ export default {
         }
 
         const now = Date.now();
+        const detectionTs = detectedAt || now;
+        const recentNavigation =
+          !!lastNavigationAt && detectionTs - lastNavigationAt <= NAV_COMPLETION_BLOCK_MS;
+        if (!userInitiated && recentNavigation) {
+          processedMap.delete(uid);
+          logCompletionDebug("skip-completion-nav", {
+            uid,
+            detectedAt: detectionTs,
+            lastNavigationAt,
+            windowMs: NAV_COMPLETION_BLOCK_MS,
+          });
+          return null;
+        }
+
         if (meta.processedTs && now - meta.processedTs < 4000) {
           processedMap.delete(uid);
           logCompletionDebug("skip-completion-recent-meta", { uid, metaProcessed: meta.processedTs, now });
@@ -2053,7 +2216,15 @@ export default {
       const attrSurface = set?.attributeSurface || "Child";
       const attrNames = set?.attrNames || resolveAttributeNames();
       const props = parseProps(block.props);
-      const rt = props.rt || {};
+      const normalizeRt = (raw = {}) => {
+        const out = {};
+        for (const [k, v] of Object.entries(raw)) {
+          const key = typeof k === "string" ? k.replace(/^:/, "") : k;
+          out[key] = v;
+        }
+        return out;
+      };
+      const rt = normalizeRt(props.rt || props[":rt"] || {});
       const childAttrMap = parseAttrsFromChildBlocks(block?.children || []);
       const repeatChild = pickChildAttr(childAttrMap, attrNames.repeatAliases, {
         allowFallback: false,
@@ -2094,15 +2265,10 @@ export default {
         !!childAttrMap[attrNames.startKey] || inlineAttrs[attrNames.startKey] != null;
       const hasCustomDeferSignal =
         !!childAttrMap[attrNames.deferKey] || inlineAttrs[attrNames.deferKey] != null;
-      const propsRepeatMatches =
-        attrNames.repeatAttr === DEFAULT_REPEAT_ATTR ||
-        props.rt?.attrRepeat === attrNames.repeatAttr;
-      const propsDueMatches =
-        attrNames.dueAttr === DEFAULT_DUE_ATTR || props.rt?.attrDue === attrNames.dueAttr;
-      const propsStartMatches =
-        attrNames.startAttr === DEFAULT_START_ATTR || props.rt?.attrStart === attrNames.startAttr;
-      const propsDeferMatches =
-        attrNames.deferAttr === DEFAULT_DEFER_ATTR || props.rt?.attrDefer === attrNames.deferAttr;
+      const propsRepeatMatches = attrNames.repeatAttr === DEFAULT_REPEAT_ATTR || rt.attrRepeat === attrNames.repeatAttr;
+      const propsDueMatches = attrNames.dueAttr === DEFAULT_DUE_ATTR || rt.attrDue === attrNames.dueAttr;
+      const propsStartMatches = attrNames.startAttr === DEFAULT_START_ATTR || rt.attrStart === attrNames.startAttr;
+      const propsDeferMatches = attrNames.deferAttr === DEFAULT_DEFER_ATTR || rt.attrDefer === attrNames.deferAttr;
       const allowPropsRepeat = propsRepeatMatches || hasCustomRepeatSignal;
       const allowPropsDue = propsDueMatches || hasCustomDueSignal;
       const allowPropsStart = propsStartMatches || hasCustomStartSignal || hasCanonicalStartSignal;
@@ -2235,6 +2401,7 @@ export default {
 
       const advanceEntry = childAttrMap[ADVANCE_ATTR.toLowerCase()];
       const advanceFrom = normalizeAdvanceValue(advanceEntry?.value) || null;
+      const richMeta = parseRichMetadata(childAttrMap, attrNames);
 
       return {
         uid: block.uid,
@@ -2253,6 +2420,7 @@ export default {
         hasTimingAttrs,
         isRecurring: hasRepeat,
         isOneOff,
+        metadata: richMeta,
       };
     }
 
@@ -2406,10 +2574,80 @@ export default {
             out.defer = out[key];
           } else if (key === attrNames.completedKey && out.completed == null) {
             out.completed = out[key];
+          } else if (key === attrNames.projectKey && out.project == null) {
+            out.project = out[key];
+          } else if (key === attrNames.waitingForKey && out.waitingFor == null) {
+            out.waitingFor = out[key];
+          } else if (key === attrNames.contextKey && out.context == null) {
+            out.context = out[key];
+          } else if (key === attrNames.priorityKey && out.priority == null) {
+            out.priority = out[key];
+          } else if (key === attrNames.energyKey && out.energy == null) {
+            out.energy = out[key];
           }
         }
       }
       return out;
+    }
+
+    function stripLinkOrTag(value) {
+      if (typeof value !== "string") return "";
+      let v = value.trim();
+      if (v.startsWith("#")) v = v.slice(1).trim();
+      const pageMatch = v.match(/^\[\[(.*)\]\]$/);
+      if (pageMatch) return pageMatch[1].trim();
+      return v;
+    }
+
+    function normalizeContextList(value) {
+      if (typeof value !== "string") return [];
+      return value
+        .split(",")
+        .map((token) => stripLinkOrTag(token))
+        .map((token) => token.replace(/^@+/, "").trim())
+        .filter(Boolean);
+    }
+
+    function normalizePriorityValue(raw) {
+      if (!raw || typeof raw !== "string") return null;
+      const s = raw.trim().toLowerCase();
+      if (["high", "h", "p1", "urgent", "important", "critical"].includes(s)) return "high";
+      if (["medium", "med", "m", "p2", "normal", "standard"].includes(s)) return "medium";
+      if (["low", "l", "p3", "minor"].includes(s)) return "low";
+      return null;
+    }
+
+    function normalizeEnergyValue(raw) {
+      if (!raw || typeof raw !== "string") return null;
+      const s = raw.trim().toLowerCase();
+      if (["high", "h", "p1", "full"].includes(s)) return "high";
+      if (["medium", "med", "m", "p2", "normal"].includes(s)) return "medium";
+      if (["low", "l", "p3", "tired"].includes(s)) return "low";
+      return null;
+    }
+
+    function formatPriorityEnergyDisplay(value) {
+      if (!value || typeof value !== "string") return "";
+      const v = value.trim().toLowerCase();
+      if (v === "low" || v === "medium" || v === "high") {
+        return v.charAt(0).toUpperCase() + v.slice(1);
+      }
+      return value;
+    }
+
+    function parseRichMetadata(childAttrMap, attrNames = resolveAttributeNames()) {
+      const projectEntry = pickChildAttr(childAttrMap, attrNames.projectAliases || [], { allowFallback: true });
+      const waitingEntry = pickChildAttr(childAttrMap, attrNames.waitingForAliases || [], { allowFallback: true });
+      const contextEntry = pickChildAttr(childAttrMap, attrNames.contextAliases || [], { allowFallback: true });
+      const priorityEntry = pickChildAttr(childAttrMap, attrNames.priorityAliases || [], { allowFallback: true });
+      const energyEntry = pickChildAttr(childAttrMap, attrNames.energyAliases || [], { allowFallback: true });
+
+      const project = projectEntry?.value ? stripLinkOrTag(projectEntry.value) || null : null;
+      const waitingFor = waitingEntry?.value ? stripLinkOrTag(waitingEntry.value) || null : null;
+      const context = contextEntry?.value ? normalizeContextList(contextEntry.value) : [];
+      const priority = normalizePriorityValue(priorityEntry?.value || null);
+      const energy = normalizeEnergyValue(energyEntry?.value || null);
+      return { project, waitingFor, context, priority, energy };
     }
 
     function escapeRegExp(str) {
@@ -2482,7 +2720,12 @@ export default {
       const start = buildAttrConfig("rt-start-attr", DEFAULT_START_ATTR);
       const defer = buildAttrConfig("rt-defer-attr", DEFAULT_DEFER_ATTR);
       const completed = buildAttrConfig("rt-completed-attr", DEFAULT_COMPLETED_ATTR);
-      const attrByType = { repeat, due, start, defer, completed };
+      const project = buildAttrConfig("bt-attr-project", DEFAULT_PROJECT_ATTR);
+      const waitingFor = buildAttrConfig("bt-attr-waitingFor", DEFAULT_WAITING_FOR_ATTR);
+      const context = buildAttrConfig("bt-attr-context", DEFAULT_CONTEXT_ATTR);
+      const priority = buildAttrConfig("bt-attr-priority", DEFAULT_PRIORITY_ATTR);
+      const energy = buildAttrConfig("bt-attr-energy", DEFAULT_ENERGY_ATTR);
+      const attrByType = { repeat, due, start, defer, completed, project, waitingFor, context, priority, energy };
       return {
         repeatAttr: repeat.attr,
         repeatKey: repeat.key,
@@ -2504,6 +2747,26 @@ export default {
         completedKey: completed.key,
         completedAliases: completed.aliases,
         completedRemovalKeys: completed.removalKeys,
+        projectAttr: project.attr,
+        projectKey: project.key,
+        projectAliases: project.aliases,
+        projectRemovalKeys: project.removalKeys,
+        waitingForAttr: waitingFor.attr,
+        waitingForKey: waitingFor.key,
+        waitingForAliases: waitingFor.aliases,
+        waitingForRemovalKeys: waitingFor.removalKeys,
+        contextAttr: context.attr,
+        contextKey: context.key,
+        contextAliases: context.aliases,
+        contextRemovalKeys: context.removalKeys,
+        priorityAttr: priority.attr,
+        priorityKey: priority.key,
+        priorityAliases: priority.aliases,
+        priorityRemovalKeys: priority.removalKeys,
+        energyAttr: energy.attr,
+        energyKey: energy.key,
+        energyAliases: energy.aliases,
+        energyRemovalKeys: energy.removalKeys,
         attrByType,
       };
     }
@@ -2543,6 +2806,11 @@ export default {
       start: 3,
       defer: 4,
       due: 5,
+      project: 6,
+      waitingfor: 7,
+      context: 8,
+      priority: 9,
+      energy: 10,
     };
 
     function getChildOrderForType(type) {
@@ -2559,6 +2827,11 @@ export default {
         { type: "start", label: getAttrLabel("start", attrNames) },
         { type: "defer", label: getAttrLabel("defer", attrNames) },
         { type: "due", label: getAttrLabel("due", attrNames) },
+        { type: "project", label: getAttrLabel("project", attrNames) },
+        { type: "waitingFor", label: getAttrLabel("waitingFor", attrNames) },
+        { type: "context", label: getAttrLabel("context", attrNames) },
+        { type: "priority", label: getAttrLabel("priority", attrNames) },
+        { type: "energy", label: getAttrLabel("energy", attrNames) },
       ].filter((entry) => typeof entry.label === "string" && entry.label.trim());
     }
 
@@ -2639,6 +2912,42 @@ export default {
             aliases: attrNames.completedAliases,
             removalKeys: attrNames.completedRemovalKeys,
           };
+        case "project":
+          return {
+            attr: attrNames.projectAttr,
+            key: attrNames.projectKey,
+            aliases: attrNames.projectAliases,
+            removalKeys: attrNames.projectRemovalKeys,
+          };
+        case "waitingFor":
+        case "waitingfor":
+          return {
+            attr: attrNames.waitingForAttr,
+            key: attrNames.waitingForKey,
+            aliases: attrNames.waitingForAliases,
+            removalKeys: attrNames.waitingForRemovalKeys,
+          };
+        case "context":
+          return {
+            attr: attrNames.contextAttr,
+            key: attrNames.contextKey,
+            aliases: attrNames.contextAliases,
+            removalKeys: attrNames.contextRemovalKeys,
+          };
+        case "priority":
+          return {
+            attr: attrNames.priorityAttr,
+            key: attrNames.priorityKey,
+            aliases: attrNames.priorityAliases,
+            removalKeys: attrNames.priorityRemovalKeys,
+          };
+        case "energy":
+          return {
+            attr: attrNames.energyAttr,
+            key: attrNames.energyKey,
+            aliases: attrNames.energyAliases,
+            removalKeys: attrNames.energyRemovalKeys,
+          };
         default:
           return null;
       }
@@ -2665,6 +2974,94 @@ export default {
       const result = await ensureChildAttr(uid, getAttrLabel(type, attrNames), value, order);
       await enforceChildAttrOrder(uid, attrNames);
       return result;
+    }
+
+    async function setRichAttribute(uid, type, value, attrNames = resolveAttributeNames()) {
+      if (!uid) return;
+      const hasValue =
+        (Array.isArray(value) && value.length > 0) ||
+        (typeof value === "string" && value.trim()) ||
+        value != null;
+      if (!hasValue) {
+        await removeChildAttrsForType(uid, type, attrNames);
+        return;
+      }
+      let writeValue = value;
+      if (Array.isArray(value)) {
+        writeValue = value.join(", ");
+      } else if (typeof value === "string") {
+        writeValue = value.trim();
+        if (type === "priority" || type === "energy") {
+          writeValue = formatPriorityEnergyDisplay(writeValue);
+        }
+      } else if (value && typeof value === "object" && value.label) {
+        writeValue = String(value.label).trim();
+      }
+      if (writeValue == null) {
+        await removeChildAttrsForType(uid, type, attrNames);
+        return;
+      }
+      await ensureChildAttrForType(uid, type, writeValue, attrNames);
+    }
+
+    async function ensurePageAndOpen(title, options = {}) {
+      const name = typeof title === "string" ? title.trim() : "";
+      if (!name) return;
+      const uid = await getOrCreatePageUid(name);
+      if (!uid) return;
+      try {
+        if (options.inSidebar) {
+          window.roamAlphaAPI?.ui?.rightSidebar?.addWindow?.({
+            window: { type: "outline", "page-uid": uid, "block-uid": uid },
+          });
+        } else {
+          window.roamAlphaAPI?.ui?.mainWindow?.openPage?.({ page: { uid } });
+        }
+      } catch (err) {
+        console.warn("[BetterTasks] open page failed", err);
+      }
+    }
+
+    async function handleMetadataClick(uid, type, payload = {}, event = null, controllerRef = null) {
+      if (!uid || !type) return;
+      const rawList = Array.isArray(payload.list) ? payload.list : [];
+      const rawValue = typeof payload.value === "string" ? payload.value : rawList[0] || "";
+      const title = stripLinkOrTag(rawValue);
+      const attrNames = resolveAttributeNames();
+      const isMeta = !!(event?.metaKey || event?.ctrlKey);
+      const inSidebar = !!event?.shiftKey;
+      if (isMeta) {
+        const next = await promptForValue({
+          title: "Better Tasks",
+          message: `Set ${type}`,
+          placeholder: type,
+          initial: rawValue || "",
+        });
+        if (next == null) return;
+        const trimmed = String(next).trim();
+        if (type === "context") {
+          const contexts = trimmed
+            ? trimmed
+              .split(",")
+              .map((t) => t.replace(/^#/, "").replace(/^@/, "").replace(/^\[\[(.*)\]\]$/, "$1").trim())
+              .filter(Boolean)
+            : [];
+          await setRichAttribute(uid, "context", contexts, attrNames);
+        } else if (type === "project") {
+          await setRichAttribute(uid, "project", trimmed || null, attrNames);
+        } else if (type === "waitingFor") {
+          await setRichAttribute(uid, "waitingFor", trimmed || null, attrNames);
+        } else if (type === "priority" || type === "energy") {
+          await setRichAttribute(uid, type, trimmed || null, attrNames);
+        }
+        const notifier = controllerRef?.notifyBlockChange || controller.notifyBlockChange;
+        if (typeof notifier === "function") {
+          await notifier(uid, { bypassFilters: true });
+        }
+        return;
+      }
+      if (!title) return;
+      await ensurePageAndOpen(title, { inSidebar });
     }
 
     async function removeChildAttrsForType(uid, type, attrNames) {
@@ -6325,6 +6722,9 @@ export default {
         notifyBlockChange,
         removeTask,
         openSettings,
+        updateMetadata,
+        handleMetadataClick,
+        promptValue: promptForValue,
         isOpen: () => !!root,
         editRepeat,
         editDate,
@@ -6526,6 +6926,37 @@ export default {
           toast("Unable to update task.");
         }
         await refresh({ reason: "toggle" });
+      }
+
+      async function updateMetadata(uid, patch) {
+        if (!uid || !patch) return;
+        const set = S();
+        const attrNames = set.attrNames;
+        try {
+          if ("project" in patch) {
+            await setRichAttribute(uid, "project", patch.project, attrNames);
+          }
+          if ("waitingFor" in patch) {
+            await setRichAttribute(uid, "waitingFor", patch.waitingFor, attrNames);
+          }
+          if ("context" in patch) {
+            const ctxArr = Array.isArray(patch.context) ? patch.context : [];
+            await setRichAttribute(uid, "context", ctxArr, attrNames);
+            if (!ctxArr.length) {
+              await removeChildAttrsForType(uid, "context", attrNames);
+            }
+          }
+          if ("priority" in patch) {
+            await setRichAttribute(uid, "priority", patch.priority, attrNames);
+          }
+          if ("energy" in patch) {
+            await setRichAttribute(uid, "energy", patch.energy, attrNames);
+          }
+        } catch (err) {
+          console.warn("[BetterTasks] updateMetadata failed", err);
+          toast("Could not update metadata.");
+        }
+        await notifyBlockChange(uid, { bypassFilters: true });
       }
 
       async function snoozeTask(uid, preset) {
@@ -6934,6 +7365,11 @@ export default {
           getAttrLabel("defer", attrNames),
           getAttrLabel("due", attrNames),
           getAttrLabel("completed", attrNames),
+          getAttrLabel("project", attrNames),
+          getAttrLabel("waitingFor", attrNames),
+          getAttrLabel("context", attrNames),
+          getAttrLabel("priority", attrNames),
+          getAttrLabel("energy", attrNames),
         ].filter(Boolean)
       );
       const results = [];
@@ -6980,7 +7416,11 @@ export default {
           : deferBucket === "deferred"
             ? "Deferred"
             : "Available";
-      const metaPills = buildDashboardPills({ startAt, deferUntil, dueAt, repeatText: meta?.repeat }, set);
+      const richMeta = meta?.metadata || parseRichMetadata(meta?.childAttrMap || {}, set?.attrNames || resolveAttributeNames());
+      const metaPills = buildDashboardPills(
+        { startAt, deferUntil, dueAt, repeatText: meta?.repeat, metadata: richMeta },
+        set
+      );
       return {
         uid: block.uid,
         text: block.string || "",
@@ -7003,6 +7443,7 @@ export default {
         deferDisplay: formatDateDisplay(deferUntil, set),
         dueDisplay: formatDateDisplay(dueAt, set),
         metaPills,
+        metadata: richMeta,
       };
     }
 
@@ -7038,6 +7479,59 @@ export default {
           icon: DUE_ICON,
           value: formatPillDateText(info.dueAt, set),
           label: `Due: ${formatIsoDate(info.dueAt, set)}`,
+        });
+      }
+      if (info.metadata?.project) {
+        pills.push({
+          type: "project",
+          icon: "📁",
+          value: info.metadata.project,
+          label: `Project: ${info.metadata.project}`,
+          raw: info.metadata.project,
+        });
+      }
+      if (info.metadata?.waitingFor) {
+        pills.push({
+          type: "waitingFor",
+          icon: "⌛",
+          value: info.metadata.waitingFor,
+          label: `Waiting for: ${info.metadata.waitingFor}`,
+          raw: info.metadata.waitingFor,
+        });
+      }
+      if (info.metadata?.context?.length) {
+        const display = info.metadata.context.slice(0, 1).join(", ");
+        const more = info.metadata.context.length > 1 ? ` (+${info.metadata.context.length - 1})` : "";
+        pills.push({
+          type: "context",
+          icon: "@",
+          value: `${display}${more}`,
+          label: `Context: ${info.metadata.context.join(", ")}`,
+          rawList: info.metadata.context,
+        });
+      }
+      if (info.metadata?.priority) {
+        const order = ["low", "medium", "high", null];
+        const currentIdx = order.indexOf(info.metadata.priority || null);
+        const next = order[(currentIdx + 1) % order.length] || null;
+        pills.push({
+          type: "priority",
+          icon: "!",
+          value: formatPriorityEnergyDisplay(info.metadata.priority),
+          label: `Priority: ${formatPriorityEnergyDisplay(info.metadata.priority)} (click to cycle)`,
+          nextValue: next,
+        });
+      }
+      if (info.metadata?.energy) {
+        const order = ["low", "medium", "high", null];
+        const currentIdx = order.indexOf(info.metadata.energy || null);
+        const next = order[(currentIdx + 1) % order.length] || null;
+        pills.push({
+          type: "energy",
+          icon: "🔋",
+          value: formatPriorityEnergyDisplay(info.metadata.energy),
+          label: `Energy: ${formatPriorityEnergyDisplay(info.metadata.energy)} (click to cycle)`,
+          nextValue: next,
         });
       }
       return pills;
@@ -7388,8 +7882,6 @@ function syncDashboardThemeVars() {
     root.dataset.theme === "dark";
 
   const externalMode = getExternalAppearanceFromToggle(); // "dark" | "light" | "auto" | null
-  console.log("[BT Theme] externalMode =", externalMode, "explicitDark =", explicitDark, "systemPrefersDark =", systemPrefersDark);
-
   let finalIsDark;
   if (externalMode === "dark") {
     finalIsDark = true;
@@ -7424,12 +7916,10 @@ function syncDashboardThemeVars() {
     !btPendingRoamStudioTheme &&
     baseSurfaceCandidate === (lastThemeSample?.surface || null)
   ) {
-    console.log("[BT Theme] baseSurface unchanged → skipping update");
     return;
   }
 
   if (btPendingRoamStudioTheme) {
-    console.log("[BT Theme] Forcing update because theme toggle was detected");
     btPendingRoamStudioTheme = false;
   }
 
@@ -7438,23 +7928,11 @@ function syncDashboardThemeVars() {
   let panelRgb = parseColorToRgb(baseSurfaceCandidate);
   if (finalIsDark && panelRgb) {
     const lum = computeLuminance(panelRgb);
-    console.log(
-      "[BT Theme] dark-mode base surface luminance =",
-      lum,
-      "for",
-      baseSurfaceCandidate
-    );
     if (lum > 0.6) {
       baseSurface = darkFallbackSurface;
       panelRgb = parseColorToRgb(baseSurface);
-      console.log(
-        "[BT Theme] overriding baseSurface with dark fallback",
-        baseSurface
-      );
     }
   }
-
-  console.log("[BT Theme] baseSurface =", baseSurface, "finalIsDark =", finalIsDark);
 
   // Stronger defaults for Blueprint dark to improve legibility
   const fallbackTextDark = usingBlueprint ? "#F5F8FA" : "#f5f8fa";
@@ -7496,13 +7974,6 @@ function syncDashboardThemeVars() {
   body.classList.toggle("bt-theme-dark", finalIsDark);
   body.classList.toggle("bt-theme-light", !finalIsDark);
 
-  console.log(
-    "[BT Theme] Applied classes: bt-theme-dark?",
-    finalIsDark,
-    "| bt-theme-light?",
-    !finalIsDark
-  );
-
   const adjustedPanel =
     adjustColor(panelRgb, finalIsDark ? -0.06 : 0.03) || baseSurface;
   const borderStrong =
@@ -7514,16 +7985,6 @@ function syncDashboardThemeVars() {
   root.style.setProperty("--bt-border-strong", borderStrong);
   root.style.setProperty("--bt-muted", mutedColor);
   root.style.setProperty("--bt-pill-bg", pillBg);
-
-  console.log("[BT Theme] CSS vars updated:", {
-    baseSurface,
-    adjustedPanel,
-    textColor,
-    borderColor,
-    borderStrong,
-    mutedColor,
-    pillBg,
-  });
 
   lastThemeSample = { surface: baseSurface, dark: finalIsDark };
 }
@@ -7544,15 +8005,10 @@ function getExternalAppearanceFromToggle() {
     // Debug info if needed
     const rsWrapper = document.querySelector(".roamstudio-dm-toggle");
     const bpWrapper = document.querySelector(".blueprint-dm-toggle");
-    console.log("[BT Theme] External theme toggle icon not found", {
-      rsWrapper,
-      bpWrapper,
-    });
     return null;
   }
 
   const className = btn.className || "";
-  console.log("[BT Theme] Theme toggle ICON found:", btn, "| className =", className);
 
   const hasMoon = btn.classList.contains("bp3-icon-moon");
   const hasFlash = btn.classList.contains("bp3-icon-flash");
@@ -7560,19 +8016,15 @@ function getExternalAppearanceFromToggle() {
 
   // Order matters: if both clean+moon are present, treat as dark.
   if (hasFlash) {
-    console.log("[BT Theme] Toggle reports mode = light");
     return "light";
   }
   if (hasMoon) {
-    console.log("[BT Theme] Toggle reports mode = dark");
     return "dark";
   }
   if (hasClean) {
-    console.log("[BT Theme] Toggle reports mode = auto");
     return "auto";
   }
 
-  console.log("[BT Theme] Toggle icon has unexpected classes, mode = null");
   return null;
 }
 
@@ -7781,7 +8233,6 @@ function observeThemeToggleClicks() {
     const toggle = e.target.closest(".roamstudio-dm-toggle, .blueprint-dm-toggle");
     if (!toggle) return;
 
-    console.log("[BT Theme] Theme toggle click detected, scheduling theme resync");
     btPendingRoamStudioTheme = true;
 
     // Still give the theme extension time to rebuild CSS

@@ -9,39 +9,64 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer, measureElement } from "@tanstack/react-virtual";
+function formatPriorityEnergyDisplay(value) {
+  if (!value || typeof value !== "string") return "";
+  const v = value.trim().toLowerCase();
+  if (v === "low" || v === "medium" || v === "high") {
+    return v.charAt(0).toUpperCase() + v.slice(1);
+  }
+  return value;
+}
 
 const FILTER_DEFS = {
-  recurrence: [
+  Recurrence: [
     { value: "recurring", label: "Recurring" },
     { value: "one-off", label: "One-off" },
   ],
-  start: [
+  Start: [
     { value: "not-started", label: "Not Started" },
     { value: "started", label: "Started" },
   ],
-  defer: [
+  Defer: [
     { value: "deferred", label: "Deferred" },
     { value: "available", label: "Available" },
   ],
-  due: [
+  Due: [
     { value: "overdue", label: "Overdue" },
     { value: "today", label: "Today" },
     { value: "upcoming", label: "Upcoming" },
     { value: "none", label: "No Due" },
   ],
-  completion: [
+  Completion: [
     { value: "open", label: "Open" },
     { value: "completed", label: "Completed" },
+  ],
+  Priority: [
+    { value: "high", label: "High" },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ],
+  Energy: [
+    { value: "high", label: "High" },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
   ],
 };
 
 const DEFAULT_FILTERS = {
-  recurrence: [],
-  start: [],
-  defer: [],
-  due: [],
-  completion: ["open"],
+  Recurrence: [],
+  Start: [],
+  Defer: [],
+  Due: [],
+  Completion: ["open"],
+  Priority: [],
+  Energy: [],
+  projectText: "",
+  waitingText: "",
 };
+
+const FILTER_SECTIONS_LEFT = ["Recurrence", "Start", "Defer"];
+const FILTER_SECTIONS_RIGHT = ["Completion", "Priority", "Energy"];
 
 const GROUPING_OPTIONS = [
   { value: "time", label: "By Time" },
@@ -78,6 +103,8 @@ function filtersReducer(state, action) {
       }
       return { ...state, [action.section]: Array.from(current) };
     }
+    case "setText":
+      return { ...state, [action.section]: action.value || "" };
     case "reset":
       return { ...DEFAULT_FILTERS };
     default:
@@ -100,11 +127,15 @@ function useControllerSnapshot(controller) {
 
 function applyFilters(tasks, filters, query) {
   const queryText = query.trim().toLowerCase();
-  const recurrenceFilter = new Set(filters.recurrence);
-  const startFilter = new Set(filters.start);
-  const deferFilter = new Set(filters.defer);
-  const dueFilter = new Set(filters.due);
-  const completionFilter = new Set(filters.completion);
+  const recurrenceFilter = new Set(filters.Recurrence || filters.recurrence || []);
+  const startFilter = new Set(filters.Start || filters.start || []);
+  const deferFilter = new Set(filters.Defer || filters.defer || []);
+  const dueFilter = new Set(filters.Due || filters.due || []);
+  const completionFilter = new Set(filters.Completion || filters.completion || []);
+  const priorityFilter = new Set(filters.Priority || filters.priority || []);
+  const energyFilter = new Set(filters.Energy || filters.energy || []);
+  const projectText = (filters.projectText || "").trim().toLowerCase();
+  const waitingText = (filters.waitingText || "").trim().toLowerCase();
   return tasks.filter((task) => {
     if (completionFilter.size) {
       const value = task.isCompleted ? "completed" : "open";
@@ -114,6 +145,17 @@ function applyFilters(tasks, filters, query) {
     if (startFilter.size && !startFilter.has(task.startBucket)) return false;
     if (deferFilter.size && !deferFilter.has(task.deferBucket)) return false;
     if (dueFilter.size && !dueFilter.has(task.dueBucket)) return false;
+    const meta = task.metadata || {};
+    if (priorityFilter.size && !priorityFilter.has(meta.priority || "")) return false;
+    if (energyFilter.size && !energyFilter.has(meta.energy || "")) return false;
+    if (projectText) {
+      const hay = (meta.project || "").toLowerCase();
+      if (!hay.includes(projectText)) return false;
+    }
+    if (waitingText) {
+      const hay = (meta.waitingFor || "").toLowerCase();
+      if (!hay.includes(waitingText)) return false;
+    }
     if (queryText) {
       const haystack = `${task.title} ${task.pageTitle || ""} ${task.text}`.toLowerCase();
       if (!haystack.includes(queryText)) return false;
@@ -187,18 +229,20 @@ function Pill({ icon, label, value, muted, onClick }) {
 }
 
 function FilterChips({ section, chips, activeValues, onToggle }) {
+  const chipList = Array.isArray(chips) ? chips : [];
+  const active = Array.isArray(activeValues) ? activeValues : [];
   return (
     <div className="bt-filter-row">
       <span className="bt-filter-row__label">{section}</span>
       <div className="bt-filter-row__chips">
-        {chips.map((chip) => {
-          const active = activeValues.includes(chip.value);
+        {chipList.map((chip) => {
+          const isActive = active.includes(chip.value);
           return (
             <button
               key={chip.value}
               type="button"
-              className={`bt-chip${active ? " bt-chip--active" : ""}`}
-              onClick={() => onToggle(section.toLowerCase(), chip.value)}
+              className={`bt-chip${isActive ? " bt-chip--active" : ""}`}
+              onClick={() => onToggle(section, chip.value)}
             >
               {chip.label}
             </button>
@@ -233,19 +277,55 @@ function TaskActionsMenu({ task, controller, onOpenChange }) {
   const menuRef = useRef(null);
   const buttonRef = useRef(null);
   const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const metadata = task.metadata || {};
+  const handleEditText = async (key, currentValue) => {
+    const label =
+      key === "project"
+        ? "Project"
+        : key === "waitingFor"
+          ? "Waiting for"
+          : key === "context"
+            ? "Context"
+            : key;
+    const next = controller.promptValue
+      ? await controller.promptValue({
+        title: "Better Tasks",
+        message: `Set ${label}`,
+        placeholder: label,
+        initial: currentValue || "",
+      })
+      : null;
+    if (next == null) return;
+    const trimmed = String(next).trim();
+    if (key === "context") {
+      const contexts = trimmed
+        ? trimmed
+          .split(",")
+          .map((t) => t.replace(/^#/, "").replace(/^@/, "").replace(/^\[\[(.*)\]\]$/, "$1").trim())
+          .filter(Boolean)
+        : [];
+      controller.updateMetadata?.(task.uid, { context: contexts });
+    } else if (key === "project") {
+      controller.updateMetadata?.(task.uid, { project: trimmed || null });
+    } else if (key === "waitingFor") {
+      controller.updateMetadata?.(task.uid, { waitingFor: trimmed || null });
+    }
+  };
+  const cycleValue = (key) => {
+    const order = [null, "low", "medium", "high"];
+    const current = metadata[key] || null;
+    const idx = order.indexOf(current);
+    const next = order[(idx + 1) % order.length];
+    controller.updateMetadata?.(task.uid, { [key]: next });
+  };
 
-  const setOpenState = useCallback(
-    (next) => {
-      setOpen((prev) => {
-        const value = typeof next === "function" ? next(prev) : next;
-        if (value !== prev) {
-          onOpenChange?.(value);
-        }
-        return value;
-      });
-    },
-    [onOpenChange]
-  );
+  const setOpenState = useCallback((next) => {
+    setOpen((prev) => (typeof next === "function" ? next(prev) : next));
+  }, []);
+
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
 
   useEffect(() => {
     return () => {
@@ -257,11 +337,11 @@ function TaskActionsMenu({ task, controller, onOpenChange }) {
     if (!buttonRef.current) return;
     const rect = buttonRef.current.getBoundingClientRect();
     const viewportHeight = window.innerHeight;
-    const estimatedHeight = 200; // provide enough room for the menu
-    const openUpwards = rect.bottom + estimatedHeight > viewportHeight && rect.top > estimatedHeight;
+    const estimatedHeight = 240; // provide enough room for the menu
+    const openUpwards = true; // prefer above
     setCoords({
       top: openUpwards ? rect.top - 6 : rect.bottom + 6,
-      left: rect.right,
+      left: rect.right - 12,
       align: openUpwards ? "top" : "bottom",
     });
   }, []);
@@ -364,8 +444,80 @@ function TaskActionsMenu({ task, controller, onOpenChange }) {
     pushDateActions("defer", hasDefer);
     pushDateActions("due", hasDue);
 
+    const meta = task.metadata || {};
+    list.push({ key: "meta-separator", label: "Metadata", separator: true });
+    if (meta.project) {
+      list.push({
+        key: "meta-project-edit",
+        label: `Edit project (${meta.project})`,
+        handler: () => handleEditText("project", meta.project),
+      });
+      list.push({
+        key: "meta-project-remove",
+        label: "Remove project",
+        handler: () => controller.updateMetadata?.(task.uid, { project: null }),
+        danger: true,
+      });
+    } else {
+      list.push({
+        key: "meta-project-add",
+        label: "Set project",
+        handler: () => handleEditText("project", meta.project),
+      });
+    }
+
+    if (meta.waitingFor) {
+      list.push({
+        key: "meta-waiting-edit",
+        label: `Edit waiting-for (${meta.waitingFor})`,
+        handler: () => handleEditText("waitingFor", meta.waitingFor),
+      });
+      list.push({
+        key: "meta-waiting-remove",
+        label: "Remove waiting-for",
+        handler: () => controller.updateMetadata?.(task.uid, { waitingFor: null }),
+        danger: true,
+      });
+    } else {
+      list.push({
+        key: "meta-waiting-add",
+        label: "Set waiting-for",
+        handler: () => handleEditText("waitingFor", meta.waitingFor),
+      });
+    }
+
+    if (meta.context && meta.context.length) {
+      list.push({
+        key: "meta-context-edit",
+        label: `Edit context (${meta.context.join(", ")})`,
+        handler: () => handleEditText("context", (meta.context || []).join(", ")),
+      });
+      list.push({
+        key: "meta-context-remove",
+        label: "Remove context",
+        handler: () => controller.updateMetadata?.(task.uid, { context: [] }),
+        danger: true,
+      });
+    } else {
+      list.push({
+        key: "meta-context-add",
+        label: "Set context",
+        handler: () => handleEditText("context", (meta.context || []).join(", ")),
+      });
+    }
+    list.push({
+      key: "meta-priority",
+      label: `Priority: ${meta.priority ? formatPriorityEnergyDisplay(meta.priority) : "none"} (click to cycle)`,
+      handler: () => cycleValue("priority"),
+    });
+    list.push({
+      key: "meta-energy",
+      label: `Energy: ${meta.energy ? formatPriorityEnergyDisplay(meta.energy) : "none"} (click to cycle)`,
+      handler: () => cycleValue("energy"),
+    });
+
     return list;
-  }, [controller, task]);
+  }, [controller, task, handleEditText]);
 
   if (!actions.length) return null;
 
@@ -404,19 +556,29 @@ function TaskActionsMenu({ task, controller, onOpenChange }) {
                 : "translate(-100%, 0)",
           }}
         >
-          {actions.map((action) => (
-            <button
+          {actions.map((action) =>
+            action.separator ? (
+              <div key={action.key} className="bt-task-menu__separator">
+                {action.label}
+              </div>
+            ) : (
+              <button
               key={action.key}
               type="button"
               className={`bt-task-menu__item${action.danger ? " bt-task-menu__item--danger" : ""}`}
               onClick={() => {
-                setOpenState(false);
-                action.handler();
+                setTimeout(() => {
+                  if (typeof action.handler === "function") {
+                    action.handler();
+                  }
+                  setOpenState(false);
+                }, 0);
               }}
             >
               {action.label}
             </button>
-          ))}
+          )
+          )}
         </div>,
         menuRoot
       )
@@ -446,6 +608,7 @@ function TaskRow({ task, controller }) {
   const handleMenuOpenChange = useCallback((value) => {
     setMenuOpen(value);
   }, []);
+  const metadata = task.metadata || {};
   const contextBits = [];
   if (task.pageTitle) {
     contextBits.push({
@@ -464,6 +627,20 @@ function TaskRow({ task, controller }) {
       ctrl.editRepeat(taskRow.uid, event);
     } else if (type === "start" || type === "defer" || type === "due") {
       ctrl.editDate(taskRow.uid, type, { event });
+    } else if (type === "priority" || type === "energy") {
+      ctrl.updateMetadata?.(taskRow.uid, { [type]: pill.nextValue });
+    } else if (type === "project") {
+      ctrl.handleMetadataClick?.(taskRow.uid, "project", { value: pill.raw || pill.value }, event, ctrl);
+    } else if (type === "waitingFor") {
+      ctrl.handleMetadataClick?.(taskRow.uid, "waitingFor", { value: pill.raw || pill.value }, event, ctrl);
+    } else if (type === "context") {
+      ctrl.handleMetadataClick?.(
+        taskRow.uid,
+        "context",
+        { value: pill.rawList?.[0] || pill.raw || pill.value, list: pill.rawList },
+        event,
+        ctrl
+      );
     }
   };
   return (
@@ -591,6 +768,7 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
   const [grouping, setGrouping] = useState("time");
   const [query, setQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState({});
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const filteredTasks = useMemo(
     () => applyFilters(snapshot.tasks, filters, query),
     [snapshot.tasks, filters, query]
@@ -655,6 +833,11 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
     }
   };
 
+  const handleProjectFilterChange = (e) =>
+    dispatchFilters({ type: "setText", section: "projectText", value: e.target.value });
+  const handleWaitingFilterChange = (e) =>
+    dispatchFilters({ type: "setText", section: "waitingText", value: e.target.value });
+
   const handleRefresh = () => controller.refresh?.({ reason: "manual" });
 
   const headerRef = useCallback(
@@ -709,7 +892,7 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
           <input
             type="text"
             className="bt-search"
-            placeholder="Search tasks"
+            placeholder="Search Better Tasks"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -724,21 +907,75 @@ export default function DashboardApp({ controller, onRequestClose, onHeaderReady
                 {option.label}
               </button>
             ))}
+            <button
+              type="button"
+              className={`bt-chip${filtersOpen ? " bt-chip--active" : ""}`}
+              onClick={() => setFiltersOpen((v) => !v)}
+              aria-expanded={filtersOpen}
+            >
+              Filters
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="bt-dashboard__filters">
-        {Object.entries(FILTER_DEFS).map(([section, chips]) => (
-          <FilterChips
-            key={section}
-            section={section}
-            chips={chips}
-            activeValues={filters[section]}
-            onToggle={handleFilterToggle}
-          />
-        ))}
-      </div>
+      {filtersOpen ? (
+        <div className="bt-dashboard__filters">
+          <div className="bt-filters-grid-cols">
+            <div className="bt-filters-col">
+              {FILTER_SECTIONS_LEFT.map((section) => (
+                <FilterChips
+                  key={section}
+                  section={section}
+                  chips={FILTER_DEFS[section]}
+                  activeValues={filters[section]}
+                  onToggle={handleFilterToggle}
+                />
+              ))}
+            </div>
+            <div className="bt-filters-col">
+              {FILTER_SECTIONS_RIGHT.map((section) => (
+                <FilterChips
+                  key={section}
+                  section={section}
+                  chips={FILTER_DEFS[section]}
+                  activeValues={filters[section]}
+                  onToggle={handleFilterToggle}
+                />
+              ))}
+            </div>
+            <div className="bt-filters-col bt-filters-col--full">
+              <FilterChips
+                key="Due"
+                section="Due"
+                chips={FILTER_DEFS["Due"]}
+                activeValues={filters["Due"]}
+                onToggle={handleFilterToggle}
+              />
+              <div className="bt-filter-text-row">
+                <label className="bt-filter-text">
+                  <span>Project</span>
+                  <input
+                    type="text"
+                    value={filters.projectText}
+                    placeholder="Project name"
+                    onChange={handleProjectFilterChange}
+                  />
+                </label>
+                <label className="bt-filter-text">
+                  <span>Waiting for</span>
+                  <input
+                    type="text"
+                    value={filters.waitingText}
+                    placeholder="Waiting for"
+                    onChange={handleWaitingFilterChange}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="bt-dashboard__content" ref={parentRef}>
         <div

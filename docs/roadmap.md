@@ -53,12 +53,18 @@ Interactive task manager view
 - First-day-of-week setting.
 - Ability to add/remove repeat/start/defer/due attributes directly from the dashboard menu.
 - Adaptive theming for Roam light/dark and popular theme packs (ongoing polish).
+- Dashboard support for waiting-for, project, context, priority and energy attributes, including creating, editing and deleting.
 
-**Pending**
+**In Progress**
 
+Inline Pills:
+- Add **waiting for** support.
 - Add **project attribute** support.
 - Add **context attribute** support.
 - Introduce **priority** and **energy** attributes.
+
+**Pending**
+
 - Explore richer Smart UI components (hover cards, quick editors, multi-select, etc.).
 
 ---
