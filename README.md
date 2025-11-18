@@ -142,6 +142,7 @@ Open the dashboard from the command palette (`Toggle Better Tasks Dashboard`) or
 - Background refreshes whenever task attributes change so pills and dashboard stay in sync.
 - A floating panel you can drag anywhere within the Roam window. The position is remembered, so place it where it works best for your workflow.
 - A subtle ⋯ menu beside each task’s pills that lets you add or remove repeat/start/defer/due attributes (or edit them) without leaving the dashboard.
+- A quick-add input at the top: type a task and hit **OK** or Enter to create it (uses AI parsing when enabled, otherwise the manual Better Task flow with scheduling).
 - Clicking the repeat or date pills in the dashboard mirrors the inline pill behaviour: you can open the same pickers, copy repeat text, or jump straight to the target Daily Note without expanding the block in Roam.
 
 Use the dashboard to triage overdue work, snooze tasks, or jump straight to the next daily note page without leaving Roam.

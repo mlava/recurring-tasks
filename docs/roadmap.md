@@ -46,6 +46,7 @@ Interactive task manager view
 **Done**
 
 - React dashboard view with filters, grouping, snooze/complete controls, and block-links.
+- Dashboard quick-add input (AI when enabled; falls back to manual Better Task flow).
 - Draggable dashboard with persistent positioning.
 - Topbar icon + command-palette toggles.
 - Live sync between dashboard and inline pills.
@@ -83,7 +84,6 @@ Optional AI-assisted task creation using a user-supplied OpenAI API key.
 - Docs: README section covering enablement, privacy, limitations, and failure behaviour.
 
 **Pending**
-- Dashboard entry point for AI creation (currently command palette + block context menu only).
 - Mapping/storing project/context/priority/energy when those attributes are defined.
 - Further prompt/model tuning once broader usage feedback arrives.
 
