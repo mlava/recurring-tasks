@@ -668,8 +668,8 @@ export default {
       const baseTitle = typeof parsed.title === "string" ? parsed.title.trim() : "";
       if (!baseTitle) return false;
       const cleanedTitle = stripSchedulingFromTitle(baseTitle, parsed);
-      const attrNames = resolveAttributeNames();
-      const set = S(attrNames);
+  const attrNames = resolveAttributeNames();
+  const set = S(attrNames);
 
       const todoString = normalizeToTodoMacro(cleanedTitle);
       if (todoString !== (block.string || "")) {
@@ -3067,6 +3067,10 @@ export default {
         if (typeof notifier === "function") {
           await notifier(uid, { bypassFilters: true });
         }
+        if (typeof window !== "undefined") {
+          window.__btInlineMetaCache?.delete(uid);
+        }
+        void syncPillsForSurface(lastAttrSurface);
         return;
       }
       if (!title) return;
@@ -5585,6 +5589,10 @@ export default {
           const hasTiming = !!meta.hasTimingAttrs;
           const isRecurring = !!meta.repeat;
           const metadataInfo = meta.metadata || parseRichMetadata(meta.childAttrMap || {}, attrNames);
+          if (typeof window !== "undefined") {
+            const metaCache = window.__btInlineMetaCache || (window.__btInlineMetaCache = new Map());
+            metaCache.set(uid, metadataInfo);
+          }
           const hasMetadataSignal =
             !!(
               metadataInfo?.project ||
@@ -5688,7 +5696,7 @@ export default {
             ) {
               return;
             }
-            showPillMenu({ uid, set, isRecurring });
+            showPillMenu({ uid, set, isRecurring, metadata: metadataInfo });
           });
 
           if (isRecurring && humanRepeat) {
@@ -5910,7 +5918,7 @@ export default {
           menuBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            showPillMenu({ uid, set, isRecurring });
+            showPillMenu({ uid, set, isRecurring, metadata: metadataInfo });
           });
           pill.appendChild(menuBtn);
 
@@ -6245,14 +6253,52 @@ export default {
       document.head.appendChild(style);
     }
 
-    function showPillMenu({ uid, set, isRecurring = true }) {
+    function showPillMenu({ uid, set, isRecurring = true, metadata = null }) {
       const menuId = `rt-pill-menu-${uid}-${Date.now()}`;
-      const metadataInfo = activeDashboardController
-        ? activeDashboardController.getTaskMetadata?.(uid)
-        : null;
-      const hasProject = !!metadataInfo?.project;
-      const hasWaiting = !!metadataInfo?.waitingFor;
-      const hasContext = Array.isArray(metadataInfo?.context) && metadataInfo.context.length > 0;
+      const pillMetaCache =
+        typeof window !== "undefined"
+          ? window.__btInlineMetaCache || (window.__btInlineMetaCache = new Map())
+          : new Map();
+      let metadataInfo =
+        metadata ||
+        pillMetaCache.get(uid) ||
+        activeDashboardController?.getTaskMetadata?.(uid) ||
+        null;
+      metadataInfo = metadataInfo || {};
+      const contexts = Array.isArray(metadataInfo.context) ? metadataInfo.context : [];
+      const hasProject = !!metadataInfo.project;
+      const hasWaiting = !!metadataInfo.waitingFor;
+      const hasContext = contexts.length > 0;
+      const attrNamesForMenu = set.attrNames || resolveAttributeNames();
+      const applyMetadataPatch = async (patch) => {
+        if (!patch) return;
+        if (activeDashboardController?.updateMetadata) {
+          await activeDashboardController.updateMetadata(uid, patch);
+          return;
+        }
+        if ("project" in patch) {
+          await setRichAttribute(uid, "project", patch.project ?? null, attrNamesForMenu);
+        }
+        if ("waitingFor" in patch) {
+          await setRichAttribute(uid, "waitingFor", patch.waitingFor ?? null, attrNamesForMenu);
+        }
+        if ("context" in patch) {
+          const ctx = Array.isArray(patch.context) ? patch.context : [];
+          await setRichAttribute(uid, "context", ctx, attrNamesForMenu);
+        }
+        if ("priority" in patch) {
+          await setRichAttribute(uid, "priority", patch.priority ?? null, attrNamesForMenu);
+        }
+        if ("energy" in patch) {
+          await setRichAttribute(uid, "energy", patch.energy ?? null, attrNamesForMenu);
+        }
+        if (typeof window !== "undefined") {
+          window.__btInlineMetaCache?.delete(uid);
+        }
+        await notifyBlockChange(uid, { bypassFilters: true });
+        void syncPillsForSurface(lastAttrSurface);
+      };
+
       const metaSection = `
         <small>Metadata</small>
         ${
@@ -6282,7 +6328,7 @@ export default {
         : "";
       const html = `
         <div class="rt-pill-menu" id="${menuId}">
-          <button data-action="snooze-1">Snooze +1 day</button>
+         <button data-action="snooze-1">Snooze +1 day</button>
          <button data-action="snooze-3">Snooze +3 days</button>
          <button data-action="snooze-next-mon">Snooze to next Monday</button>
          <button data-action="snooze-pick">Snooze (pick date)</button>
@@ -6320,6 +6366,58 @@ export default {
           attach('[data-action="skip"]', () => skipOccurrence(uid, set));
           attach('[data-action="generate"]', () => generateNextNow(uid, set));
           attach('[data-action="end"]', () => endRecurrence(uid, set));
+          attach('[data-action="meta-project-add"]', async () => {
+            const val = await promptForValue({
+              title: "Add Project",
+              message: "Enter a project",
+              placeholder: "Project name",
+              initial: "",
+            });
+            if (!val || !val.trim()) return;
+            await applyMetadataPatch({ project: val.trim() });
+          });
+          attach('[data-action="meta-project-remove"]', () => applyMetadataPatch({ project: null }));
+          attach('[data-action="meta-waiting-add"]', async () => {
+            const val = await promptForValue({
+              title: "Add Waiting-for",
+              message: "Who or what are you waiting for?",
+              placeholder: "Waiting for",
+              initial: "",
+            });
+            if (!val || !val.trim()) return;
+            await applyMetadataPatch({ waitingFor: val.trim() });
+          });
+          attach('[data-action="meta-waiting-remove"]', () => applyMetadataPatch({ waitingFor: null }));
+          attach('[data-action="meta-context-add"]', async () => {
+            const val = await promptForValue({
+              title: "Add Context",
+              message: "Enter contexts (comma separated)",
+              placeholder: "Context",
+              initial: "",
+            });
+            if (val == null) return;
+            const contexts = val
+              .split(",")
+              .map((token) => stripLinkOrTag(token))
+              .map((token) => token.replace(/^@/, "").trim())
+              .filter(Boolean);
+            await applyMetadataPatch({ context: contexts });
+          });
+          attach('[data-action="meta-context-remove"]', () => applyMetadataPatch({ context: [] }));
+          attach('[data-action="meta-priority-cycle"]', async () => {
+            const order = [null, "low", "medium", "high"];
+            const current = (metadataInfo?.priority || "").toLowerCase() || null;
+            const idx = order.indexOf(current);
+            const next = order[(idx + 1) % order.length];
+            await applyMetadataPatch({ priority: next });
+          });
+          attach('[data-action="meta-energy-cycle"]', async () => {
+            const order = [null, "low", "medium", "high"];
+            const current = (metadataInfo?.energy || "").toLowerCase() || null;
+            const idx = order.indexOf(current);
+            const next = order[(idx + 1) % order.length];
+            await applyMetadataPatch({ energy: next });
+          });
         },
       });
     }
@@ -6927,6 +7025,7 @@ export default {
         updateMetadata,
         handleMetadataClick,
         promptValue: promptForValue,
+        getTaskMetadata,
         isOpen: () => !!root,
         editRepeat,
         editDate,
@@ -6955,6 +7054,12 @@ export default {
           listener({ ...state, tasks: state.tasks.map((task) => ({ ...task })) });
         }
         return () => subscribers.delete(listener);
+      }
+
+      function getTaskMetadata(uid) {
+        if (!uid) return null;
+        const task = state.tasks.find((entry) => entry.uid === uid);
+        return task?.metadata || null;
       }
 
       function ensureInitialLoad() {
@@ -7157,6 +7262,9 @@ export default {
         } catch (err) {
           console.warn("[BetterTasks] updateMetadata failed", err);
           toast("Could not update metadata.");
+        }
+        if (typeof window !== "undefined") {
+          window.__btInlineMetaCache?.delete(uid);
         }
         await notifyBlockChange(uid, { bypassFilters: true });
         void syncPillsForSurface(lastAttrSurface);
@@ -7477,10 +7585,26 @@ export default {
       await activeDashboardController?.refresh?.({ reason: `pill-${type}` });
     }
 
-    function openPillMenuForTask(uid) {
+    async function openPillMenuForTask(uid) {
       if (!uid) return;
       const set = S();
-      showPillMenu({ uid, set });
+      let metadata = null;
+      let isRecurring = true;
+      try {
+        const block = await getBlock(uid);
+        if (block) {
+          const meta = await readRecurringMeta(block, set);
+          metadata = meta?.metadata || parseRichMetadata(meta?.childAttrMap || {}, set.attrNames);
+          isRecurring = !!meta?.repeat;
+          if (typeof window !== "undefined") {
+            const metaCache = window.__btInlineMetaCache || (window.__btInlineMetaCache = new Map());
+            metaCache.set(uid, metadata || {});
+          }
+        }
+      } catch (_) {
+        // ignore metadata fetch failures
+      }
+      showPillMenu({ uid, set, isRecurring, metadata });
     }
 
     async function removeTaskAttribute(uid, type) {
@@ -7885,12 +8009,14 @@ function monthFromText(x) {
   const m = MONTH_MAP[x.toLowerCase()];
   return m || null;
 }
+
 function expandDowRange(startISO, endISO, dowOrder = DOW_ORDER) {
   const s = dowOrder.indexOf(startISO), e = dowOrder.indexOf(endISO);
   if (s === -1 || e === -1) return [];
   if (s <= e) return dowOrder.slice(s, e + 1);
   return [...dowOrder.slice(s), ...dowOrder.slice(0, e + 1)]; // wrap
 }
+
 function splitList(str) {
   return str
     .replace(/&/g, ",")
@@ -7898,6 +8024,7 @@ function splitList(str) {
     .split(/[,\s/]+/)
     .filter(Boolean);
 }
+
 // Recognize MWF / TTh sets
 function parseAbbrevSet(token) {
   const t = token.toLowerCase();
@@ -7905,6 +8032,7 @@ function parseAbbrevSet(token) {
   if (t === "tth" || t === "tu/th" || t === "t/th") return ["TU", "TH"];
   return null;
 }
+
 // Turn mixed text, ranges, and shorthands into ISO DOW array
 function normalizeByDayList(raw, weekStartCode = DEFAULT_WEEK_START_CODE) {
   const tokens = splitList(raw.replace(/[-–—]/g, "-"));
