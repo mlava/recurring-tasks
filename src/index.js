@@ -219,7 +219,7 @@ export default {
     const introSeen = extensionAPI.settings.get(INSTALL_TOAST_KEY);
     if (!introSeen) {
       toast(
-        "This extension automatically recognises {{[[TODO]]}} tasks in your graph and uses attributes to determine a recurrence pattern and due date. By default, it uses 'BT_attrRepeat' and 'BT_attrDue' as those attributes. These can be changed in the extension settings.<BR><BR>If you already happen to use 'BT_attrRepeat' and/or 'BT_attrDue' attributes for other functions in your graph, please change the defaults in Roam Depot Settings for this extension BEFORE testing it's functionality to avoid any unexpected behaviour."
+        "This extension automatically recognises {{[[TODO]]}} tasks in your graph and uses attributes to determine a recurrence pattern and other attributes. By default, it uses attributes like 'BT_attrRepeat' and 'BT_attrDue'. These can be changed in the extension settings.<BR><BR>If you already happen to use attributes like 'BT_attrRepeat' or 'BT_attrDue' for other functions in your graph, please change the defaults in the Roam Depot Settings for this extension BEFORE testing its functionality to avoid any unexpected behaviour.", 10000
       );
       extensionAPI.settings.set(INSTALL_TOAST_KEY, "1");
     }
@@ -4724,7 +4724,7 @@ export default {
         }
         */
 
-    function toast(msg) {
+    function toast(msg, timer = 3000) {
       // ensureToastStyles();
       iziToast.show({
         theme: 'light',
@@ -4733,7 +4733,7 @@ export default {
         class: 'betterTasks',
         position: 'center',
         close: false,
-        timeout: 3000,
+        timeout: timer,
         closeOnClick: true,
         displayMode: 2,
       });
